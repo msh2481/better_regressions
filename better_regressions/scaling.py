@@ -86,9 +86,9 @@ class Scaler(BaseEstimator, RegressorMixin):
         self.x_transformer_ = self._get_transformer(self.x_method)
         self.y_transformer_ = self._get_transformer(self.y_method)
         X_scaled = self.x_transformer_.fit_transform(X)
-        sum_variances = np.sum(np.var(X_scaled, axis=0))
+        sum_second_moment = np.sum(np.sum(X_scaled**2, axis=0))
         if self.use_feature_variance:
-            self.y_norm_factor_ = np.sqrt(sum_variances + 1e-18)
+            self.y_norm_factor_ = np.sqrt(sum_second_moment + 1e-18)
         else:
             self.y_norm_factor_ = 1.0
 
