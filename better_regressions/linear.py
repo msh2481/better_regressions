@@ -18,7 +18,7 @@ class Linear(RegressorMixin, BaseEstimator):
         better_bias: If True, include ones column as feature and don't fit intercept
     """
 
-    def __init__(self, alpha: float | str = 1.0, better_bias: bool = True):
+    def __init__(self, alpha: int | float | str = 1.0, better_bias: bool = True):
         super().__init__()
         self.alpha = alpha
         self.better_bias = better_bias
@@ -55,6 +55,8 @@ class Linear(RegressorMixin, BaseEstimator):
         else:
             self.coef_ = model.coef_
             self.intercept_ = model.intercept_
+        if isinstance(self.alpha, str) and self.alpha.lower() == "ard":
+            self.lambda_ = model.lambda_
 
         return self
 

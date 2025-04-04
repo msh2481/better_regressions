@@ -18,12 +18,14 @@ class Scaler(BaseEstimator, RegressorMixin):
         estimator: The regression estimator to wrap
         x_method: Scaling method for input features
         y_method: Scaling method for target values
+        use_feature_variance: If True, normalize y based on sqrt(sum(var(X_scaled))) before y_method
     """
 
-    def __init__(self, estimator, x_method: str = "standard", y_method: str = "standard"):
+    def __init__(self, estimator, x_method: str = "standard", y_method: str = "standard", use_feature_variance: bool = True):
         self.estimator = estimator
         self.x_method = x_method
         self.y_method = y_method
+        self.use_feature_variance = use_feature_variance
         self._validate_methods()
         self.wrapped_estimator = clone(estimator)
 
@@ -58,13 +60,15 @@ class Scaler(BaseEstimator, RegressorMixin):
         estimator_repr = self.estimator.__repr__(var_name=est_var)
         lines.append(estimator_repr)
 
-        init_line = f"{var_name} = Scaler(estimator={est_var}, x_method='{self.x_method}', y_method='{self.y_method}')"
+        init_line = f"{var_name} = Scaler(estimator={est_var}, x_method='{self.x_method}', y_method='{self.y_method}', use_feature_variance={self.use_feature_variance})"
         lines.append(init_line)
 
-        # If fitted, add transformer states
+        # If fitted, add transformer states and normalization factor
         if hasattr(self, "x_transformer_") and hasattr(self, "y_transformer_"):
-            # TODO
+            # TODO: Add code to properly recreate the fitted transformers
             lines.append(f"# TODO: Add code to properly recreate the fitted transformers")
+        if self.use_feature_variance and hasattr(self, "y_norm_factor_"):
+            lines.append(f"{var_name}.y_norm_factor_ = {self.y_norm_factor_:.9g}")
 
         return "\n".join(lines)
 
@@ -81,16 +85,24 @@ class Scaler(BaseEstimator, RegressorMixin):
         """
         self.x_transformer_ = self._get_transformer(self.x_method)
         self.y_transformer_ = self._get_transformer(self.y_method)
-        y_2d = y.reshape(-1, 1)
         X_scaled = self.x_transformer_.fit_transform(X)
-        y_scaled = self.y_transformer_.fit_transform(y_2d).ravel()
+        sum_variances = np.sum(np.var(X_scaled, axis=0))
+        if self.use_feature_variance:
+            self.y_norm_factor_ = np.sqrt(sum_variances + 1e-18)
+        else:
+            self.y_norm_factor_ = 1.0
+
+        y_2d = y.reshape(-1, 1)
+        y_to_transform = y_2d / self.y_norm_factor_
+        y_scaled = self.y_transformer_.fit_transform(y_to_transform).ravel()
+        y_scaled *= self.y_norm_factor_
         self.wrapped_estimator.fit(X_scaled, y_scaled)
         return self
 
     @typed
     def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
         X_scaled = self.x_transformer_.transform(X)
-        y_scaled_pred = self.wrapped_estimator.predict(X_scaled)
-        y_scaled_pred_2d = y_scaled_pred.reshape(-1, 1)
-        y_pred = self.y_transformer_.inverse_transform(y_scaled_pred_2d).ravel()
-        return y_pred
+        y_scaled_pred = self.wrapped_estimator.predict(X_scaled) / self.y_norm_factor_
+        y_scaled_pred = y_scaled_pred.reshape(-1, 1)
+        y_pred = self.y_transformer_.inverse_transform(y_scaled_pred) * self.y_norm_factor_
+        return y_pred.ravel()
