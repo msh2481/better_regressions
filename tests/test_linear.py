@@ -4,6 +4,7 @@ import numpy as np
 from beartype import beartype as typed
 
 from better_regressions.linear import Linear
+from better_regressions.scaling import Scaler
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.datasets import make_regression
@@ -53,7 +54,7 @@ def test_linear_better_bias_equivalence():
 
 @typed
 def compare_linear_variants():
-    """Compare different variants of Linear regression on regression problems."""
+    """Compare different variants of Linear regression on regression problems with appropriate scaling."""
     # Create datasets with different characteristics
     datasets = [
         # Small dataset with low noise
@@ -66,13 +67,28 @@ def compare_linear_variants():
         make_regression(n_samples=100, n_features=15, noise=0.2, random_state=42, tail_strength=0.9),  # More extreme values
     ]
 
-    # Model configurations to test
-    configs = [
+    # Base model configurations to test
+    base_configs = [
         {"alpha": 1e-6, "better_bias": False, "name": "Ridge (α=1e-6, standard bias)"},
         {"alpha": 1e-6, "better_bias": True, "name": "Ridge (α=1e-6, better bias)"},
         {"alpha": "ard", "better_bias": False, "name": "ARD (standard bias)"},
         {"alpha": "ard", "better_bias": True, "name": "ARD (better bias)"},
     ]
+
+    # Wrap all configurations with appropriate scaling
+    configs = []
+    for config in base_configs:
+        # Create a copy of the config
+        scaled_config = config.copy()
+
+        # Create base estimator
+        base_estimator = Linear(alpha=config["alpha"], better_bias=config["better_bias"])
+
+        # Wrap with Scaler - only scale X, not y (to keep the better_bias meaning)
+        scaled_config["estimator"] = Scaler(estimator=base_estimator, x_method="standard", y_method="none")  # Don't scale target
+        scaled_config["name"] = f"{config['name']} + X scaling"
+
+        configs.append(scaled_config)
 
     # Store results for each dataset
     results = []
@@ -88,7 +104,10 @@ def compare_linear_variants():
         dataset_results = {"name": dataset_name, "configs": []}
 
         for config in configs:
-            model = Linear(alpha=config["alpha"], better_bias=config["better_bias"])
+            # Clone estimator to ensure fresh fitting
+            model = config["estimator"]
+
+            # Fit model
             model.fit(X_train, y_train)
 
             # Evaluate on train and test
@@ -102,9 +121,16 @@ def compare_linear_variants():
             print(f"  Train MSE: {train_mse:.6f}")
             print(f"  Test MSE: {test_mse:.6f}")
 
+            # Get the coefficients from the wrapped model
+            wrapped_model = model.wrapped_estimator if hasattr(model, "wrapped_estimator") else model
+
             # Calculate coefficient norm as a measure of regularization effectiveness
-            coef_norm = np.linalg.norm(model.coef_)
-            print(f"  Coefficient norm: {coef_norm:.6f}")
+            if hasattr(wrapped_model, "coef_"):
+                coef_norm = np.linalg.norm(wrapped_model.coef_)
+                print(f"  Coefficient norm: {coef_norm:.6f}")
+            else:
+                coef_norm = float("nan")
+                print("  Coefficient norm: N/A")
 
             config_result = {
                 "name": config["name"],
@@ -119,12 +145,14 @@ def compare_linear_variants():
 
     # Summarize model comparison
     print("\n=== SUMMARY ===")
-    print("Average Test MSE across all datasets:")
+    print("Geometric Mean Test MSE across all datasets:")
 
     for i in range(len(configs)):
-        avg_test_mse = np.mean([r["configs"][i]["test_mse"] for r in results])
+        # Use geometric mean instead of arithmetic mean
+        test_mses = [r["configs"][i]["test_mse"] for r in results]
+        geo_mean_test_mse = np.exp(np.mean(np.log(test_mses)))
         config_name = configs[i]["name"]
-        print(f"{config_name}: {avg_test_mse:.6f}")
+        print(f"{config_name}: {geo_mean_test_mse:.6f}")
 
     # Rank performance
     avg_ranks = []
