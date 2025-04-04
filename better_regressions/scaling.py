@@ -10,6 +10,30 @@ from sklearn.preprocessing import QuantileTransformer, StandardScaler
 from better_regressions.repr_utils import format_array
 
 
+class SecondMomentScaler(BaseEstimator, RegressorMixin):
+    """Scales data by dividing by the square root of the second moment (mean of squares)"""
+
+    def __init__(self):
+        pass
+
+    @typed
+    def fit(self, X: Float[ND, "n_samples n_features"], y=None) -> "SecondMomentScaler":
+        self.scale_ = np.sqrt(np.mean(X**2, axis=0) + 1e-18)
+        return self
+
+    @typed
+    def transform(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples n_features"]:
+        return X / self.scale_
+
+    @typed
+    def fit_transform(self, X: Float[ND, "n_samples n_features"], y=None) -> Float[ND, "n_samples n_features"]:
+        return self.fit(X).transform(X)
+
+    @typed
+    def inverse_transform(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples n_features"]:
+        return X * self.scale_
+
+
 @typed
 class Scaler(BaseEstimator, RegressorMixin):
     """Wraps a regression estimator with scaling for inputs and targets.
@@ -42,7 +66,7 @@ class Scaler(BaseEstimator, RegressorMixin):
         if method == "none":
             return StandardScaler(with_mean=False, with_std=False)
         elif method == "standard":
-            return StandardScaler(with_mean=False)
+            return SecondMomentScaler()
         elif method == "quantile-uniform":
             return QuantileTransformer(output_distribution="uniform")
         elif method == "quantile-normal":
@@ -74,20 +98,12 @@ class Scaler(BaseEstimator, RegressorMixin):
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Scaler":
-        """Fit transformers and the wrapped estimator.
-
-        Args:
-            X: Input features
-            y: Target values
-
-        Returns:
-            self: Fitted scaler
-        """
         self.x_transformer_ = self._get_transformer(self.x_method)
         self.y_transformer_ = self._get_transformer(self.y_method)
         X_scaled = self.x_transformer_.fit_transform(X)
-        sum_second_moment = np.sum(np.sum(X_scaled**2, axis=0))
+        sum_second_moment = np.sum(np.mean(X_scaled**2, axis=0))
         if self.use_feature_variance:
+            # *2 is to account for some noise in the target
             self.y_norm_factor_ = np.sqrt(sum_second_moment + 1e-18)
         else:
             self.y_norm_factor_ = 1.0
@@ -106,3 +122,53 @@ class Scaler(BaseEstimator, RegressorMixin):
         y_scaled_pred = y_scaled_pred.reshape(-1, 1)
         y_pred = self.y_transformer_.inverse_transform(y_scaled_pred) * self.y_norm_factor_
         return y_pred.ravel()
+
+
+class DebugEstimator(BaseEstimator, RegressorMixin):
+    """Estimator that just prints stats of data distribution during fit"""
+
+    def __init__(self):
+        pass
+
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "DebugEstimator":
+        X_means = np.mean(X, axis=0)
+        X_stds = np.std(X, axis=0)
+        print(f"X means: {X_means.mean():.3g} +-{X_means.std():.3g}")
+        print(f"X stds: {X_stds.mean():.3g} +-{X_stds.std():.3g}")
+        print(f"y mean: {np.mean(y)}")
+        print(f"y std: {np.std(y)}")
+        print()
+        return self
+
+    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        return X
+
+
+def test_scaler():
+    d = 100
+    N = 1000
+    X = np.random.randn(N, d)
+    scale = np.exp(np.random.randn(d))
+    # scale = np.ones(d)
+    X *= scale[None, :]
+    w = np.random.randn(d)
+    y = X @ w
+    y += np.std(y) * np.random.randn(N)
+
+    scaler = Scaler(DebugEstimator(), x_method="none", y_method="none", use_feature_variance=False)
+    scaler.fit(X, y)
+    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="none", use_feature_variance=False)
+    scaler.fit(X, y)
+    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="standard", use_feature_variance=False)
+    scaler.fit(X, y)
+    print("Now with feature variance")
+    scaler = Scaler(DebugEstimator(), x_method="none", y_method="none", use_feature_variance=True)
+    scaler.fit(X, y)
+    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="none", use_feature_variance=True)
+    scaler.fit(X, y)
+    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="standard", use_feature_variance=True)
+    scaler.fit(X, y)
+
+
+if __name__ == "__main__":
+    test_scaler()

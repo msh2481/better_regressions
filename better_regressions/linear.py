@@ -2,10 +2,11 @@
 
 import numpy as np
 from beartype import beartype as typed
+from beartype.typing import Literal
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.linear_model import ARDRegression, Ridge
+from sklearn.linear_model import ARDRegression, BayesianRidge, Ridge
 
 from better_regressions.repr_utils import format_array
 
@@ -18,7 +19,7 @@ class Linear(RegressorMixin, BaseEstimator):
         better_bias: If True, include ones column as feature and don't fit intercept
     """
 
-    def __init__(self, alpha: int | float | str = 1.0, better_bias: bool = True):
+    def __init__(self, alpha: int | float | Literal["ard", "bayes"] = 1.0, better_bias: bool = True):
         super().__init__()
         self.alpha = alpha
         self.better_bias = better_bias
@@ -38,8 +39,10 @@ class Linear(RegressorMixin, BaseEstimator):
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Linear":
         X_fit = X.copy()
 
-        if isinstance(self.alpha, str) and self.alpha.lower() == "ard":
+        if self.alpha == "ard":
             model = ARDRegression(fit_intercept=not self.better_bias)
+        elif self.alpha == "bayes":
+            model = BayesianRidge(fit_intercept=not self.better_bias)
         else:
             model = Ridge(alpha=self.alpha, fit_intercept=not self.better_bias)
 

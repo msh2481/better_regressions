@@ -185,14 +185,34 @@ def compare_scaling_variants(n_runs: int = 100):
 
 
 @typed
+def generate_regression(n_samples: int, n_features: int, noise: float, outliers: float = 0.0, noninformative: float = 0.5) -> tuple[Float[ND, "n_samples n_features"], Float[ND, "n_samples"]]:
+    """Generate a regression dataset."""
+    X = np.random.randn(n_samples, n_features)
+    scale = np.exp(np.random.randn(n_features))
+    w = np.random.randn(n_features)
+    y = X @ w
+    X *= scale[None, :]
+    y += np.std(y) * np.random.randn(n_samples) * noise
+    if outliers > 0.0:
+        n_outliers = int(n_samples * outliers)
+        outliers_idx = np.random.choice(n_samples, size=n_outliers, replace=False)
+        y[outliers_idx] = np.std(y) * 10 * np.random.randn(n_outliers)
+    if noninformative > 0.0:
+        n_noninformative = int(n_features * noninformative)
+        noninformative_idx = np.random.choice(n_features, size=n_noninformative, replace=False)
+        X[:, noninformative_idx] = np.random.randn(n_samples, n_noninformative) * scale[noninformative_idx][None, :]
+    return X, y
+
+
+@typed
 def compare_feature_variance_norm(n_runs: int = 100):
     """Compare Ridge regression with and without feature variance normalization."""
     print(f"\n=== Feature Variance Normalization Comparison (Ridge, {n_runs} runs) ===")
     datasets = [
-        ("Small Low Noise", lambda r: make_regression(n_samples=50, n_features=10, noise=0.1, random_state=r)),
-        ("Medium Medium Noise", lambda r: make_regression(n_samples=200, n_features=20, noise=0.5, random_state=r)),
-        ("Large High Noise", lambda r: make_regression(n_samples=500, n_features=30, noise=1.0, random_state=r)),
-        ("Outliers", lambda r: make_regression(n_samples=100, n_features=15, noise=0.2, random_state=r, tail_strength=0.9)),
+        ("Small Low Noise", lambda r: generate_regression(n_samples=200, n_features=10, noise=0.01)),
+        ("Medium Medium Noise", lambda r: generate_regression(n_samples=500, n_features=20, noise=0.1)),
+        ("Large High Noise", lambda r: generate_regression(n_samples=1000, n_features=30, noise=0.3)),
+        ("Outliers", lambda r: generate_regression(n_samples=1000, n_features=15, noise=0.2, outliers=0.2)),
     ]
 
     configs = []
@@ -200,7 +220,7 @@ def compare_feature_variance_norm(n_runs: int = 100):
     for use_feat_var in [False, True]:
         label = "+ FeatVar" if use_feat_var else "No FeatVar"
         # Using std bias and StdXY scaling as a base
-        base_estimator = Linear(alpha="ard", better_bias=False)
+        base_estimator = Linear(alpha="bayes", better_bias=False)
         estimator = Scaler(estimator=base_estimator, x_method="standard", y_method="standard", use_feature_variance=use_feat_var)
         configs.append({"name": f"ARD (α={alpha}, StdXY, {label})", "estimator": estimator})
         # Now with only StdX scaling
@@ -212,6 +232,9 @@ def compare_feature_variance_norm(n_runs: int = 100):
         # Now without scaling
         estimator = Scaler(estimator=base_estimator, x_method="none", y_method="none", use_feature_variance=use_feat_var)
         configs.append({"name": f"ARD (α={alpha}, No scaling, {label})", "estimator": estimator})
+    base_estimator = Linear(alpha=1e-6, better_bias=False)
+    estimator = Scaler(estimator=base_estimator, x_method="none", y_method="none", use_feature_variance=False)
+    configs.append({"name": f"Ridge (α={1e-6}, No scaling, No FeatVar)", "estimator": estimator})
 
     all_results = {config["name"]: {ds_name: [] for ds_name, _ in datasets} for config in configs}
 
@@ -221,7 +244,7 @@ def compare_feature_variance_norm(n_runs: int = 100):
 
         for ds_name, data_fn in datasets:
             X, y = data_fn(run_random_state)
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=run_random_state)
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.8, random_state=run_random_state)
 
             for config in configs:
                 model = config["estimator"]
@@ -235,13 +258,16 @@ def compare_feature_variance_norm(n_runs: int = 100):
     for config in configs:
         config_name = config["name"]
         geo_means_per_run = []
+        full = []
         for run in range(n_runs):
             run_mses = [all_results[config_name][ds_name][run] for ds_name, _ in datasets]
+            full.extend(run_mses)
             geo_means_per_run.append(np.exp(np.mean(np.log(run_mses))))
 
+        geom_mean = np.exp(np.mean(np.log(full)))
         q5, q50, q95 = np.percentile(geo_means_per_run, [5, 50, 95])
-        summary_table.append({"name": config_name, "q5": q5, "q50": q50, "q95": q95})
-        print(f"{config_name}: {q50:.6f} ({q5:.6f} - {q95:.6f})")
+        summary_table.append({"name": config_name, "q5": q5, "q50": q50, "q95": q95, "geom_mean": geom_mean})
+        print(f"{config_name}: {geom_mean:.6f} ({q5:.6f} - {q50:.6f} - {q95:.6f})")
 
     print("\n=== DATASET-SPECIFIC RESULTS (Median Test MSE over runs) ===")
     for ds_name, _ in datasets:
@@ -268,12 +294,12 @@ def compare_feature_variance_norm(n_runs: int = 100):
         for config in configs:
             config_name = config["name"]
             results = all_results[config_name][ds_name]
-            median_mse = np.median(results)
+            geom_mean = np.exp(np.mean(np.log(results)))
             q5, q95 = np.percentile(results, [5, 95])
-            ds_results.append({"name": config_name, "median": median_mse, "q5": q5, "q95": q95})
+            ds_results.append({"name": config_name, "geom_mean": geom_mean, "q5": q5, "q95": q95})
 
         for result in ds_results:
-            print(f"{result['name']}: {result['median']:.6f} ({result['q5']:.6f} - {result['q95']:.6f})")
+            print(f"{result['name']}: {result['geom_mean']:.6f} ({result['q5']:.6f} - {result['q95']:.6f})")
 
 
 @typed
