@@ -142,33 +142,3 @@ class DebugEstimator(BaseEstimator, RegressorMixin):
 
     def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
         return X
-
-
-def test_scaler():
-    d = 100
-    N = 1000
-    X = np.random.randn(N, d)
-    scale = np.exp(np.random.randn(d))
-    # scale = np.ones(d)
-    X *= scale[None, :]
-    w = np.random.randn(d)
-    y = X @ w
-    y += np.std(y) * np.random.randn(N)
-
-    scaler = Scaler(DebugEstimator(), x_method="none", y_method="none", use_feature_variance=False)
-    scaler.fit(X, y)
-    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="none", use_feature_variance=False)
-    scaler.fit(X, y)
-    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="standard", use_feature_variance=False)
-    scaler.fit(X, y)
-    print("Now with feature variance")
-    scaler = Scaler(DebugEstimator(), x_method="none", y_method="none", use_feature_variance=True)
-    scaler.fit(X, y)
-    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="none", use_feature_variance=True)
-    scaler.fit(X, y)
-    scaler = Scaler(DebugEstimator(), x_method="standard", y_method="standard", use_feature_variance=True)
-    scaler.fit(X, y)
-
-
-if __name__ == "__main__":
-    test_scaler()
