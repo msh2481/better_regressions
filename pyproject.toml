@@ -19,6 +19,7 @@ dependencies = [
     "supersmoother>=0.4",
     "loguru>=0.7.3",
     "pandas>=2.2.3",
+    "lightgbm>=4.6.0",
 ]
 
 [project.optional-dependencies]
