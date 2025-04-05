@@ -5,9 +5,11 @@ import numpy as np
 from beartype import beartype as typed
 from beartype.typing import Literal
 from jaxtyping import Float, Int
+from loguru import logger
 from numpy import ndarray as ND
 from scipy.sparse import csr_matrix
 from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.decomposition import PCA
 from sklearn.ensemble import ExtraTreesRegressor, RandomForestRegressor
 
 from better_regressions.linear import Linear
@@ -22,7 +24,8 @@ class TreeLinear(RegressorMixin, BaseEstimator):
     1. Trains a tree-based model (LGBM, RandomForest, or ExtraTrees)
     2. Extracts leaf indices for each input point
     3. One-hot encodes and concatenates these indices as embeddings
-    4. Fits a linear regression on the resulting embeddings
+    4. Optionally reduces dimensionality with PCA
+    5. Fits a linear regression on the resulting embeddings
 
     Args:
         tree_type: Type of tree model to use ("rf" for RandomForest, "et" for ExtraTrees, "lgbm" for LightGBM)
@@ -33,6 +36,8 @@ class TreeLinear(RegressorMixin, BaseEstimator):
         min_samples_leaf: Minimum number of samples required at a leaf node
         random_state: Random state for reproducibility
         use_sparse: Whether to use sparse matrices internally (faster but may not work with all estimators)
+        hidden_dim: Number of dimensions to reduce embeddings to with PCA (None=no reduction)
+        pca_whiten: Whether to whiten the PCA components
     """
 
     def __init__(
@@ -45,6 +50,8 @@ class TreeLinear(RegressorMixin, BaseEstimator):
         min_samples_leaf: int = 1,
         random_state: int | None = None,
         use_sparse: bool = False,
+        hidden_dim: int | None = None,
+        pca_whiten: bool = False,
     ):
         super().__init__()
         self.tree_type = tree_type
@@ -55,6 +62,8 @@ class TreeLinear(RegressorMixin, BaseEstimator):
         self.min_samples_leaf = min_samples_leaf
         self.random_state = random_state
         self.use_sparse = use_sparse
+        self.hidden_dim = hidden_dim
+        self.pca_whiten = pca_whiten
 
     def _get_tree_model(self):
         """Create and return the appropriate tree model."""
@@ -134,26 +143,50 @@ class TreeLinear(RegressorMixin, BaseEstimator):
         return leaf_embeddings
 
     @typed
+    def _apply_pca(self, embeddings: Float[ND, "n_samples n_leaves"]) -> Float[ND, "n_samples hidden_dim"]:
+        """Apply PCA dimensionality reduction to leaf embeddings."""
+        # If no PCA or insufficient samples, return original embeddings
+        if self.hidden_dim is None:
+            return embeddings
+
+        # Apply PCA transformation if fitted, otherwise fit and transform
+        if hasattr(self, "pca_"):
+            return self.pca_.transform(embeddings)
+        else:
+            # Calculate effective hidden_dim based on data
+            effective_dim = min(self.hidden_dim, embeddings.shape[0], embeddings.shape[1])
+            # Initialize and fit PCA
+            self.pca_ = PCA(n_components=effective_dim, whiten=self.pca_whiten, random_state=self.random_state)
+            return self.pca_.fit_transform(embeddings)
+
+    @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "TreeLinear":
         """Fit the TreeLinear model.
 
         First trains the tree model, then extracts leaf embeddings,
-        and finally fits a linear model on these embeddings.
+        applies PCA if specified, and finally fits a linear model.
         """
-        # Fit the tree model
+        # Fit tree model and get leaf embeddings
         self.tree_model_ = self._get_tree_model()
         self.tree_model_.fit(X, y)
-
-        # Get leaf embeddings
         leaf_embeddings = self._get_leaf_embeddings(X)
-
-        # Store the embeddings shape for later use
         self.n_leaves_ = leaf_embeddings.shape[1]
 
-        # Fit linear model with scaling for better performance
+        # Log information about dimensions
+        logger.info(f"Original dims: {self.n_leaves_} | n_samples: {leaf_embeddings.shape[0]} | method: {self.tree_type}")
+
+        # Apply dimensionality reduction if specified
+        if self.hidden_dim is not None:
+            reduced_embeddings = self._apply_pca(leaf_embeddings)
+            self.reduced_dim_ = reduced_embeddings.shape[1]
+            logger.info(f"After PCA: {self.reduced_dim_} dimensions")
+        else:
+            reduced_embeddings = leaf_embeddings
+
+        # Fit linear model on the (potentially reduced) embeddings
         linear = Linear(alpha=self.alpha, better_bias=self.better_bias)
         self.linear_model_ = Scaler(estimator=linear, x_method="standard", y_method="standard", use_feature_variance=True)
-        self.linear_model_.fit(leaf_embeddings, y)
+        self.linear_model_.fit(reduced_embeddings, y)
 
         return self
 
@@ -172,6 +205,10 @@ class TreeLinear(RegressorMixin, BaseEstimator):
         elif leaf_embeddings.shape[1] > self.n_leaves_:
             # Truncate to match training dimensions
             leaf_embeddings = leaf_embeddings[:, : self.n_leaves_]
+
+        # Apply PCA if it was used during training
+        if hasattr(self, "pca_"):
+            leaf_embeddings = self.pca_.transform(leaf_embeddings)
 
         # Predict using the linear model
         return self.linear_model_.predict(leaf_embeddings)

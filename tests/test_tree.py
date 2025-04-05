@@ -140,7 +140,53 @@ def test_treelinear_nonlinear():
     print(f"LightGBM: {lgbm_mse/vanilla_lgbm_mse:.4f}")
 
 
+@typed
+def test_treelinear_with_pca():
+    """Test TreeLinear with PCA dimensionality reduction."""
+    # Create non-linear dataset with higher dimensionality
+    np.random.seed(42)
+    n_samples = 500
+    n_features = 4
+    X = np.random.uniform(-3, 3, size=(n_samples, n_features))
+    y = X[:, 0] ** 2 + np.sin(X[:, 1]) + X[:, 2] * X[:, 3] + np.random.normal(0, 0.1, n_samples)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Baseline TreeLinear without PCA
+    baseline_model = TreeLinear(tree_type="rf", n_estimators=30, max_depth=4, alpha="bayes", random_state=42)
+    baseline_model.fit(X_train, y_train)
+    baseline_pred = baseline_model.predict(X_test)
+    baseline_mse = mean_squared_error(y_test, baseline_pred)
+
+    # Models with different PCA dimensions
+    pca_dims = [10, 50, 100]
+    pca_results = {}
+
+    for dim in pca_dims:
+        model = TreeLinear(tree_type="rf", n_estimators=30, max_depth=4, alpha="bayes", random_state=42, hidden_dim=dim, pca_whiten=False)
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, pred)
+        pca_results[dim] = mse
+
+    # Print results
+    print(f"TreeLinear without PCA: {baseline_mse:.6f}")
+    for dim, mse in pca_results.items():
+        print(f"TreeLinear with PCA (dim={dim}): {mse:.6f}")
+
+    # At least one PCA configuration should perform reasonably compared to baseline
+    best_pca_mse = min(pca_results.values())
+    mse_ratio = best_pca_mse / baseline_mse
+    print(f"Best PCA / No PCA ratio: {mse_ratio:.4f}")
+
+    # Not asserting exact performance ratios as they're dataset dependent,
+    # but ensure PCA doesn't completely destroy performance
+    assert mse_ratio < 2.0, "PCA shouldn't drastically worsen performance"
+
+
 if __name__ == "__main__":
     test_treelinear_basic()
     print("\n" + "-" * 50 + "\n")
     test_treelinear_nonlinear()
+    print("\n" + "-" * 50 + "\n")
+    test_treelinear_with_pca()
