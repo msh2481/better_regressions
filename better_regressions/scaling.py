@@ -5,9 +5,9 @@ from beartype import beartype as typed
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator, clone, RegressorMixin
-from sklearn.preprocessing import QuantileTransformer, StandardScaler
+from sklearn.preprocessing import PowerTransformer, QuantileTransformer, StandardScaler
 
-from better_regressions.repr_utils import format_array
+from better_regressions.utils import format_array
 
 
 class SecondMomentScaler(BaseEstimator, RegressorMixin):
@@ -55,7 +55,7 @@ class Scaler(BaseEstimator, RegressorMixin):
 
     def _validate_methods(self):
         """Validate scaling method names."""
-        valid_methods = ["none", "standard", "quantile-uniform", "quantile-normal"]
+        valid_methods = ["none", "standard", "quantile-uniform", "quantile-normal", "power"]
         if self.x_method not in valid_methods:
             raise ValueError(f"Invalid x_method: {self.x_method}. Choose from {valid_methods}")
         if self.y_method not in valid_methods:
@@ -68,9 +68,11 @@ class Scaler(BaseEstimator, RegressorMixin):
         elif method == "standard":
             return SecondMomentScaler()
         elif method == "quantile-uniform":
-            return QuantileTransformer(output_distribution="uniform")
+            return QuantileTransformer(output_distribution="uniform", n_quantiles=20)
         elif method == "quantile-normal":
-            return QuantileTransformer(output_distribution="normal")
+            return QuantileTransformer(output_distribution="normal", n_quantiles=20)
+        elif method == "power":
+            return PowerTransformer()
 
     @typed
     def __repr__(self, var_name: str = "model") -> str:

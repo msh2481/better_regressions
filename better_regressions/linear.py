@@ -8,7 +8,7 @@ from numpy import ndarray as ND
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import ARDRegression, BayesianRidge, Ridge
 
-from better_regressions.repr_utils import format_array
+from better_regressions.utils import format_array
 
 
 @typed
@@ -19,7 +19,7 @@ class Linear(RegressorMixin, BaseEstimator):
         better_bias: If True, include ones column as feature and don't fit intercept
     """
 
-    def __init__(self, alpha: int | float | Literal["ard", "bayes"] = 1.0, better_bias: bool = True):
+    def __init__(self, alpha: int | float | Literal["ard", "bayes"] = "bayes", better_bias: bool = True):
         super().__init__()
         self.alpha = alpha
         self.better_bias = better_bias

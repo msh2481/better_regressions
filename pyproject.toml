@@ -15,6 +15,10 @@ dependencies = [
     "scikit-learn>=1.0.0",
     "beartype>=0.10.0",
     "jaxtyping>=0.2.11",
+    "matplotlib>=3.10.1",
+    "supersmoother>=0.4",
+    "loguru>=0.7.3",
+    "pandas>=2.2.3",
 ]
 
 [project.optional-dependencies]
