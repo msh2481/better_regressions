@@ -243,8 +243,155 @@ def benchmark_nonlinear_datasets(n_runs: int = 3, test_size: float = 0.2):
         print(f"  {model}: {stats['mean']:.4f} ± {stats['sem']:.4f}")
 
 
+@typed
+def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.2):
+    """Benchmark Linear regression with various scalers on transformed Gaussian data.
+
+    This benchmark:
+    1. Generates standard Gaussian regression data
+    2. Applies non-linear transformations to X features
+    3. Applies different non-linear transformations to the target y
+    4. Tests Linear regression with different scalers
+    """
+    print(f"\n=== Transformed Data Benchmark ({n_runs} runs) ===\n")
+
+    # Define transformations for X features
+    x_transformations = [
+        ("exp", lambda x: np.exp(x)),
+        ("log", lambda x: np.sign(x) * np.log1p(np.abs(x))),
+        ("sqrt", lambda x: np.sign(x) * np.sqrt(np.abs(x))),
+        ("square", lambda x: np.sign(x) * x**2),
+        ("cube", lambda x: x**3),
+    ]
+
+    # Define transformations for y target
+    y_transformations = [
+        ("exp", lambda y: np.exp(np.clip(y, -10, 10))),
+        ("log", lambda y: np.sign(y) * np.log1p(np.abs(y))),
+        ("sqrt", lambda y: np.sign(y) * np.sqrt(np.abs(y))),
+        ("square", lambda y: np.sign(y) * y**2),
+        ("sigmoid", lambda y: 1 / (1 + np.exp(-y))),
+    ]
+
+    # Models (Linear with various scalers)
+    models = [
+        ("Linear-Standard", lambda: Scaler(Linear(alpha=1e-6), x_method="standard", y_method="standard")),
+        ("Linear-Power", lambda: Scaler(Linear(alpha=1e-6), x_method="power", y_method="power")),
+        ("Linear-Quantile", lambda: Scaler(Linear(alpha=1e-6), x_method="quantile-normal", y_method="quantile-normal")),
+        ("Angle-Standard", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard")),
+        ("Angle-Power", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power")),
+        ("Angle-Quantile", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal")),
+    ]
+
+    results = []
+
+    for run in range(n_runs):
+        print(f"Starting run {run+1}/{n_runs}...")
+
+        # For each combination of X and Y transformation
+        for x_name, x_transform in x_transformations:
+            for y_name, y_transform in y_transformations:
+                # Skip if X and Y use the same transformation type
+                if x_name == y_name:
+                    continue
+
+                # Generate base regression data
+                X_base, y_base = generate_regression(n_samples=2000, n_features=5, noise=1.0)
+
+                # Apply transformations
+                X = np.copy(X_base)
+                for j in range(X.shape[1]):
+                    X[:, j] = x_transform(X_base[:, j])
+                y = y_transform(y_base / np.std(y_base))
+
+                # Train/test split
+                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=run)
+
+                for model_name, model_fn in models:
+                    model = model_fn()
+
+                    # Fit and predict
+                    assert not np.any(np.isnan(X_train)), "X_train contains NaNs"
+                    assert not np.any(np.isnan(y_train)), "y_train contains NaNs"
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_test)
+                    assert not np.any(np.isnan(y_pred)), "y_pred contains NaNs"
+                    # test_mse = mean_squared_error(y_test, y_pred)
+                    test_mse = np.max(np.abs(y_test - y_pred))
+
+                    # Store results
+                    results.append({"x_transform": x_name, "y_transform": y_name, "model": model_name, "run": run, "test_mse": test_mse})
+
+                    print(f"  X:{x_name}, Y:{y_name}, {model_name}: MSE = {test_mse:.6f}")
+
+    # Convert to dataframe and analyze
+    df = pd.DataFrame(results)
+
+    # Normalize MSE within each transformation pair
+    for x_trans in df["x_transform"].unique():
+        for y_trans in df["y_transform"].unique():
+            mask = (df["x_transform"] == x_trans) & (df["y_transform"] == y_trans)
+            if not any(mask):
+                continue
+
+            baseline_mse = df[mask & (df["model"] == "Linear-Standard")]["test_mse"].mean()
+            df.loc[mask, "rel_mse"] = df.loc[mask, "test_mse"] / baseline_mse
+
+    # Print summary by transformation pair
+    print("\n=== MODEL PERFORMANCE BY TRANSFORMATION PAIR ===")
+    for x_trans in df["x_transform"].unique():
+        for y_trans in df["y_transform"].unique():
+            if x_trans == y_trans:
+                continue
+
+            print(f"\n--- X: {x_trans}, Y: {y_trans} ---")
+            mask = (df["x_transform"] == x_trans) & (df["y_transform"] == y_trans)
+            trans_df = df[mask]
+
+            # Group by model and get statistics
+            model_stats = trans_df.groupby("model")["test_mse"].agg(["mean", "std", "min", "count"])
+            model_stats["sem"] = model_stats["std"] / np.sqrt(model_stats["count"])
+            model_stats = model_stats.sort_values("mean")
+
+            # Print model performance
+            print(f"Performance (MSE, lower is better):")
+            for model, stats in model_stats.iterrows():
+                print(f"  {model}: {stats['mean']:.6f} ± {stats['sem']:.6f}")
+
+            # Find best model
+            best_model = model_stats.index[0]
+            improvement = 100 * (1 - model_stats.loc[best_model, "mean"] / model_stats.loc["Linear-Standard", "mean"])
+            print(f"Best model: {best_model} ({improvement:.2f}% improvement over Linear-Standard)")
+
+    # Overall model comparison
+    print("\n=== OVERALL MODEL PERFORMANCE ===")
+    model_stats = df.groupby("model")["rel_mse"].agg(["mean", "std", "count"])
+    model_stats["sem"] = model_stats["std"] / np.sqrt(model_stats["count"])
+    model_stats = model_stats.sort_values("mean")
+
+    print("Average relative MSE across all transformations (lower is better):")
+    for model, stats in model_stats.iterrows():
+        print(f"  {model}: {stats['mean']:.4f} ± {stats['sem']:.4f}")
+
+    # Performance by X transformation
+    print("\n=== PERFORMANCE BY X TRANSFORMATION ===")
+    x_trans_stats = df.groupby(["x_transform", "model"])["rel_mse"].mean().unstack()
+    for x_trans in x_trans_stats.index:
+        best_model = x_trans_stats.loc[x_trans].idxmin()
+        print(f"X transformation '{x_trans}' best handled by: {best_model}")
+
+    # Performance by Y transformation
+    print("\n=== PERFORMANCE BY Y TRANSFORMATION ===")
+    y_trans_stats = df.groupby(["y_transform", "model"])["rel_mse"].mean().unstack()
+    for y_trans in y_trans_stats.index:
+        best_model = y_trans_stats.loc[y_trans].idxmin()
+        print(f"Y transformation '{y_trans}' best handled by: {best_model}")
+
+
 if __name__ == "__main__":
-    test_linear_better_bias_equivalence()
-    test_nonlinear_datasets()
-    print("\n" + "-" * 50 + "\n")
-    benchmark_nonlinear_datasets()
+    # test_linear_better_bias_equivalence()
+    # test_nonlinear_datasets()
+    # print("\n" + "-" * 50 + "\n")
+    # benchmark_nonlinear_datasets()
+    # print("\n" + "-" * 50 + "\n")
+    benchmark_transformed_data()

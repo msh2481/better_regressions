@@ -51,7 +51,7 @@ class Scaler(BaseEstimator, RegressorMixin):
         self.y_method = y_method
         self.use_feature_variance = use_feature_variance
         self._validate_methods()
-        self.wrapped_estimator = clone(estimator)
+        self.estimator_ = clone(estimator)
 
     def _validate_methods(self):
         """Validate scaling method names."""
@@ -105,7 +105,6 @@ class Scaler(BaseEstimator, RegressorMixin):
         X_scaled = self.x_transformer_.fit_transform(X)
         sum_second_moment = np.sum(np.mean(X_scaled**2, axis=0))
         if self.use_feature_variance:
-            # *2 is to account for some noise in the target
             self.y_norm_factor_ = np.sqrt(sum_second_moment + 1e-18)
         else:
             self.y_norm_factor_ = 1.0
@@ -113,16 +112,31 @@ class Scaler(BaseEstimator, RegressorMixin):
         y_2d = y.reshape(-1, 1)
         y_to_transform = y_2d / self.y_norm_factor_
         y_scaled = self.y_transformer_.fit_transform(y_to_transform).ravel()
+
+        # Store min/max bounds if using PowerTransformer to handle out-of-bounds later
+        if isinstance(self.y_transformer_, PowerTransformer):
+            self.y_min_ = np.min(y_scaled)
+            self.y_max_ = np.max(y_scaled)
+
         y_scaled *= self.y_norm_factor_
-        self.wrapped_estimator.fit(X_scaled, y_scaled)
+        self.estimator_.fit(X_scaled, y_scaled)
         return self
 
     @typed
     def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        assert not np.any(np.isnan(X)), "X contains NaNs"
         X_scaled = self.x_transformer_.transform(X)
-        y_scaled_pred = self.wrapped_estimator.predict(X_scaled) / self.y_norm_factor_
+        assert not np.any(np.isnan(X_scaled)), "X_scaled contains NaNs"
+        y_scaled_pred = self.estimator_.predict(X_scaled) / self.y_norm_factor_
+        assert not np.any(np.isnan(y_scaled_pred)), "y_scaled_pred contains NaNs"
         y_scaled_pred = y_scaled_pred.reshape(-1, 1)
+
+        # Clip values before inverse_transform to avoid NaNs when using PowerTransformer
+        if isinstance(self.y_transformer_, PowerTransformer) and hasattr(self, "y_min_"):
+            y_scaled_pred = np.clip(y_scaled_pred, self.y_min_, self.y_max_)
+
         y_pred = self.y_transformer_.inverse_transform(y_scaled_pred) * self.y_norm_factor_
+        assert not np.any(np.isnan(y_pred)), "y_pred contains NaNs"
         return y_pred.ravel()
 
 

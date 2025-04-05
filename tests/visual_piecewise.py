@@ -131,6 +131,89 @@ def test_step_function():
     plt.show()
 
 
+@typed
+def test_exp_sqrt_transformation():
+    """Visualize the specific case of x-transform=exp, y-transform=sqrt with Angle-Standard model."""
+    np.random.seed(42)
+
+    # Generate regression data (simpler version than benchmark to allow visualization)
+    n_samples = 500
+    n_features = 1  # Use 1D for visualization
+
+    # Generate base data
+    X_base = np.random.randn(n_samples, n_features)
+    w = np.random.randn(n_features)
+    y_base = X_base @ w + 1.0 * np.random.randn(n_samples)
+
+    # Apply transformations
+    X = np.exp(X_base)  # exp transform
+    y = np.sign(y_base) * np.sqrt(np.abs(y_base / np.std(y_base)))  # sqrt transform
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    models = {
+        "Linear-Standard": Scaler(Linear(alpha=1e-6), x_method="standard", y_method="standard"),
+        "Linear-Power": Scaler(Linear(alpha=1e-6), x_method="power", y_method="power"),
+        "Linear-Quantile": Scaler(Linear(alpha=1e-6), x_method="quantile-normal", y_method="quantile-normal"),
+        "Angle-Standard": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard"),
+        "Angle-Power": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power"),
+        "Angle-Quantile": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal"),
+    }
+
+    plt.figure(figsize=(12, 8))
+
+    # Sort X for plotting
+    X_sorted_indices = np.argsort(X_train.ravel())
+    X_train_sorted = X_train[X_sorted_indices]
+    y_train_sorted = y_train[X_sorted_indices]
+
+    # Plot training data
+    plt.scatter(X_train, y_train, s=10, color="gray", alpha=0.5, label="Training data")
+
+    # Generate points for prediction curve
+    X_demo = np.linspace(np.min(X) * 0.9, np.max(X) * 1.1, 1000).reshape(-1, 1)
+
+    results = {}
+
+    for model_name, model in models.items():
+        with Silencer():
+            model.fit(X_train, y_train)
+
+        # Predict on test data for MSE calculation
+        y_pred_test = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred_test)
+        results[model_name] = mse
+
+        # Predict on demo points for visualization
+        y_demo = model.predict(X_demo)
+
+        # Plot predictions
+        plt.plot(X_demo, y_demo, label=f"{model_name} (MSE: {mse:.6f})")
+
+    plt.title("Regression Models on exp(X), sqrt(y) Transformed Data")
+    plt.xlabel("X (after exp transform)")
+    plt.ylabel("y (after sqrt transform)")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    # Print MSE results
+    print("\nMSE for exp(X), sqrt(y) transformation:")
+    for model, mse in sorted(results.items(), key=lambda x: x[1]):
+        print(f"{model}: {mse:.6f}")
+
+    # Add a subplot to visualize the raw data relationship
+    plt.figure(figsize=(12, 8))
+    plt.scatter(X_base, y_base, s=10, color="gray", alpha=0.5, label="Original data (before transforms)")
+    plt.title("Original Data (Before Transforms)")
+    plt.xlabel("X (before exp transform)")
+    plt.ylabel("y (before sqrt transform)")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    plt.show()
+
+
 if __name__ == "__main__":
-    test_piecewise_linear()
-    test_step_function()
+    # test_piecewise_linear()
+    # test_step_function()
+    test_exp_sqrt_transformation()
