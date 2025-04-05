@@ -7,11 +7,17 @@ Advanced regression methods with an sklearn-like interface.
 - Linear regression with configurable regularization:
   - Ridge regression with alpha parameter
   - Automatic Relevance Determination (ARD) regression
+  - Bayesian Ridge regression
   - "Better bias" option to properly regularize the intercept term
-- Input/target scaling wrapper with multiple normalization methods:
-  - Standard scaling (zero mean, unit variance)
+- Input/target scaling wrappers:
+  - Standard scaling (based on second moment)
   - Quantile transformation with uniform output
   - Quantile transformation with normal output
+  - Power transformation
+  - AutoScaler to automatically select the best scaling method
+- Smoothing-based regression:
+  - Boosting-based regression using smooth functions for features
+  - Two smoothing methods: SuperSmoother and piecewise-linear (Angle)
 
 ## Installation
 
@@ -51,34 +57,4 @@ print(f"Intercept: {model.intercept_}")
 ard_model = Linear(alpha="ard", better_bias=True)
 ard_scaled = Scaler(ard_model, x_method="quantile-normal", y_method="standard")
 ard_scaled.fit(X, y)
-```
-
-## Project Structure
-
-```
-better-regressions/
-├── better_regressions/       # Main package
-│   ├── __init__.py           # Package initialization
-│   ├── linear.py             # Linear regression models
-│   ├── scaling.py            # Data normalization wrappers
-│   └── repr_utils.py         # Utility for model representations
-└── tests/                    # Test directory
-    └── test_linear.py        # Linear model tests
-```
-
-## Development
-
-This project uses uv for dependency management:
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/better-regressions.git
-cd better-regressions
-
-# Create a virtual environment and install dependencies
-uv venv
-uv pip install -e ".[dev]"
-
-# Run tests
-python -m tests.test_linear
 ```

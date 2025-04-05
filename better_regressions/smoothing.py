@@ -32,7 +32,7 @@ class Smooth(RegressorMixin, BaseEstimator):
         method: Literal["supersmoother", "angle"] = "angle",
         lr: float = 0.5,
         max_epochs: int = 100,
-        n_points: int = 200,
+        n_points: int = 50,
         use_early_stopping: bool = False,
         val_size: float = 0.2,
         patience: int = 2,

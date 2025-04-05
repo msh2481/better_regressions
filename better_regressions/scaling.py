@@ -81,20 +81,63 @@ class Scaler(BaseEstimator, RegressorMixin):
         """Generate code to recreate this model."""
         lines = []
 
-        # Create base Scaler instance
-        estimator_repr = repr(self.estimator)
-        assert hasattr(self.estimator, "__repr__") and callable(self.estimator.__repr__)
         est_var = f"{var_name}_est"
-        estimator_repr = self.estimator.__repr__(var_name=est_var)
+        estimator_repr = self.estimator_.__repr__(var_name=est_var)
         lines.append(estimator_repr)
 
         init_line = f"{var_name} = Scaler(estimator={est_var}, x_method='{self.x_method}', y_method='{self.y_method}', use_feature_variance={self.use_feature_variance})"
         lines.append(init_line)
+        lines.append(f"{var_name}.estimator_ = {est_var}")
 
         # If fitted, add transformer states and normalization factor
         if hasattr(self, "x_transformer_") and hasattr(self, "y_transformer_"):
-            # TODO: Add code to properly recreate the fitted transformers
-            lines.append(f"# TODO: Add code to properly recreate the fitted transformers")
+            # Add code to properly recreate the fitted transformers
+            if isinstance(self.x_transformer_, SecondMomentScaler):
+                lines.append(f"{var_name}.x_transformer_ = SecondMomentScaler()")
+                lines.append(f"{var_name}.x_transformer_.scale_ = {format_array(self.x_transformer_.scale_)}")
+            elif isinstance(self.x_transformer_, StandardScaler):
+                lines.append(f"{var_name}.x_transformer_ = StandardScaler(with_mean=False, with_std=False)")
+            elif isinstance(self.x_transformer_, QuantileTransformer):
+                output_dist = "'uniform'" if self.x_method == "quantile-uniform" else "'normal'"
+                lines.append(f"{var_name}.x_transformer_ = QuantileTransformer(output_distribution={output_dist}, n_quantiles=20)")
+                if hasattr(self.x_transformer_, "quantiles_"):
+                    lines.append(f"{var_name}.x_transformer_.quantiles_ = {format_array(self.x_transformer_.quantiles_)}")
+                if hasattr(self.x_transformer_, "references_"):
+                    lines.append(f"{var_name}.x_transformer_.references_ = {format_array(self.x_transformer_.references_)}")
+            elif isinstance(self.x_transformer_, PowerTransformer):
+                lines.append(f"{var_name}.x_transformer_ = PowerTransformer()")
+                if hasattr(self.x_transformer_, "lambdas_"):
+                    lines.append(f"{var_name}.x_transformer_.lambdas_ = {format_array(self.x_transformer_.lambdas_)}")
+                if hasattr(self.x_transformer_, "_scaler"):
+                    lines.append(f"{var_name}.x_transformer_._scaler.scale_ = {format_array(self.x_transformer_._scaler.scale_)}")
+                    lines.append(f"{var_name}.x_transformer_._scaler.mean_ = {format_array(self.x_transformer_._scaler.mean_)}")
+
+            # Y transformer
+            if isinstance(self.y_transformer_, SecondMomentScaler):
+                lines.append(f"{var_name}.y_transformer_ = SecondMomentScaler()")
+                lines.append(f"{var_name}.y_transformer_.scale_ = {format_array(self.y_transformer_.scale_)}")
+            elif isinstance(self.y_transformer_, StandardScaler):
+                lines.append(f"{var_name}.y_transformer_ = StandardScaler(with_mean=False, with_std=False)")
+            elif isinstance(self.y_transformer_, QuantileTransformer):
+                output_dist = "'uniform'" if self.y_method == "quantile-uniform" else "'normal'"
+                lines.append(f"{var_name}.y_transformer_ = QuantileTransformer(output_distribution={output_dist}, n_quantiles=20)")
+                if hasattr(self.y_transformer_, "quantiles_"):
+                    lines.append(f"{var_name}.y_transformer_.quantiles_ = {format_array(self.y_transformer_.quantiles_)}")
+                if hasattr(self.y_transformer_, "references_"):
+                    lines.append(f"{var_name}.y_transformer_.references_ = {format_array(self.y_transformer_.references_)}")
+            elif isinstance(self.y_transformer_, PowerTransformer):
+                lines.append(f"{var_name}.y_transformer_ = PowerTransformer()")
+                if hasattr(self.y_transformer_, "lambdas_"):
+                    lines.append(f"{var_name}.y_transformer_.lambdas_ = {format_array(self.y_transformer_.lambdas_)}")
+                if hasattr(self.y_transformer_, "_scaler"):
+                    lines.append(f"{var_name}.y_transformer_._scaler.scale_ = {format_array(self.y_transformer_._scaler.scale_)}")
+                    lines.append(f"{var_name}.y_transformer_._scaler.mean_ = {format_array(self.y_transformer_._scaler.mean_)}")
+
+            # Add y_min_ and y_max_ if using PowerTransformer
+            if isinstance(self.y_transformer_, PowerTransformer) and hasattr(self, "y_min_") and hasattr(self, "y_max_"):
+                lines.append(f"{var_name}.y_min_ = {self.y_min_:.9g}")
+                lines.append(f"{var_name}.y_max_ = {self.y_max_:.9g}")
+
         if self.use_feature_variance and hasattr(self, "y_norm_factor_"):
             lines.append(f"{var_name}.y_norm_factor_ = {self.y_norm_factor_:.9g}")
 
@@ -166,20 +209,20 @@ class AutoScaler(BaseEstimator, RegressorMixin):
     def __repr__(self, var_name: str = "model") -> str:
         """Generate code to recreate this model."""
         lines = []
-
-        # Create base AutoScaler instance
-        estimator_repr = repr(self.estimator)
-        assert hasattr(self.estimator, "__repr__") and callable(self.estimator.__repr__)
-        est_var = f"{var_name}_est"
-        estimator_repr = self.estimator.__repr__(var_name=est_var)
-        lines.append(estimator_repr)
-
-        init_line = f"{var_name} = AutoScaler(estimator={est_var}, val_size={self.val_size}, random_state={self.random_state})"
+        lines.append(f"{var_name}_est = {repr(self.estimator)}")
+        init_line = f"{var_name} = AutoScaler(estimator={var_name}_est, val_size={self.val_size}, random_state={self.random_state})"
         lines.append(init_line)
 
         # If fitted, add selected scaler info
         if hasattr(self, "best_scaler_"):
-            lines.append(f"# Selected x_method='{self.best_x_method_}', y_method='{self.best_y_method_}' with score: {self.best_score_:.6f}")
+            lines.append(f"{var_name}.best_x_method_ = '{self.best_x_method_}'")
+            lines.append(f"{var_name}.best_y_method_ = '{self.best_y_method_}'")
+            lines.append(f"{var_name}.best_score_ = {self.best_score_:.6f}")
+
+            # Use the best_scaler's __repr__ method
+            scaler_repr = self.best_scaler_.__repr__(var_name=f"{var_name}_best_scaler")
+            lines.append(scaler_repr)
+            lines.append(f"{var_name}.best_scaler_ = {var_name}_best_scaler")
 
         return "\n".join(lines)
 
