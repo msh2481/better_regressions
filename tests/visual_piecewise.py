@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from beartype import beartype as typed
 
-from better_regressions import Angle, Linear, Scaler, Silencer, Smooth
+from better_regressions import Angle, AutoScaler, Linear, Scaler, Silencer, Smooth
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -133,7 +133,7 @@ def test_step_function():
 
 @typed
 def test_exp_sqrt_transformation():
-    """Visualize the specific case of x-transform=exp, y-transform=sqrt with Angle-Standard model."""
+    """Visualize the specific case of x-transform=exp, y-transform=sqrt with various models including AutoScaler."""
     np.random.seed(42)
 
     # Generate regression data (simpler version than benchmark to allow visualization)
@@ -158,6 +158,8 @@ def test_exp_sqrt_transformation():
         "Angle-Standard": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard"),
         "Angle-Power": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power"),
         "Angle-Quantile": Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal"),
+        "AutoScaler-Linear": AutoScaler(Linear(alpha=1e-6)),
+        "AutoScaler-Angle": AutoScaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5)),
     }
 
     plt.figure(figsize=(12, 8))
@@ -174,10 +176,15 @@ def test_exp_sqrt_transformation():
     X_demo = np.linspace(np.min(X) * 0.9, np.max(X) * 1.1, 1000).reshape(-1, 1)
 
     results = {}
+    auto_selections = {}
 
     for model_name, model in models.items():
         with Silencer():
             model.fit(X_train, y_train)
+
+        # Store AutoScaler selection info
+        if "AutoScaler" in model_name and hasattr(model, "best_x_method_"):
+            auto_selections[model_name] = f"{model.best_x_method_}/{model.best_y_method_} (score: {model.best_score_:.6f})"
 
         # Predict on test data for MSE calculation
         y_pred_test = model.predict(X_test)
@@ -190,7 +197,9 @@ def test_exp_sqrt_transformation():
         # Plot predictions
         plt.plot(X_demo, y_demo, label=f"{model_name} (MSE: {mse:.6f})")
 
-    plt.title("Regression Models on exp(X), sqrt(y) Transformed Data")
+    # Add AutoScaler selections to title
+    auto_title = ", ".join([f"{k}: chose {v}" for k, v in auto_selections.items()])
+    plt.title(f"Regression Models on exp(X), sqrt(y) Transformed Data\n{auto_title}")
     plt.xlabel("X (after exp transform)")
     plt.ylabel("y (after sqrt transform)")
     plt.legend()

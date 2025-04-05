@@ -20,6 +20,8 @@ dependencies = [
     "loguru>=0.7.3",
     "pandas>=2.2.3",
     "lightgbm>=4.6.0",
+    "ipykernel>=6.29.5",
+    "rich>=14.0.0",
 ]
 
 [project.optional-dependencies]

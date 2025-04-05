@@ -5,6 +5,8 @@ from beartype import beartype as typed
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator, clone, RegressorMixin
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, QuantileTransformer, StandardScaler
 
 from better_regressions.utils import format_array
@@ -138,6 +140,103 @@ class Scaler(BaseEstimator, RegressorMixin):
         y_pred = self.y_transformer_.inverse_transform(y_scaled_pred) * self.y_norm_factor_
         assert not np.any(np.isnan(y_pred)), "y_pred contains NaNs"
         return y_pred.ravel()
+
+
+@typed
+class AutoScaler(BaseEstimator, RegressorMixin):
+    """Automatically selects the best scaling method for input and target.
+
+    Tries various combinations of scaling methods (standard, power, quantile-normal)
+    and selects the best one based on validation performance.
+
+    Args:
+        estimator: The regression estimator to wrap
+        use_feature_variance: If True, normalize y based on sqrt(sum(var(X_scaled)))
+        val_size: Fraction of data to use for validation when selecting scaling
+        random_state: Random state for train/val split
+    """
+
+    def __init__(self, estimator, val_size: float = 0.3, random_state: int = 42):
+        self.estimator = estimator
+        self.val_size = val_size
+        self.random_state = random_state
+        self.estimator_ = clone(estimator)
+
+    @typed
+    def __repr__(self, var_name: str = "model") -> str:
+        """Generate code to recreate this model."""
+        lines = []
+
+        # Create base AutoScaler instance
+        estimator_repr = repr(self.estimator)
+        assert hasattr(self.estimator, "__repr__") and callable(self.estimator.__repr__)
+        est_var = f"{var_name}_est"
+        estimator_repr = self.estimator.__repr__(var_name=est_var)
+        lines.append(estimator_repr)
+
+        init_line = f"{var_name} = AutoScaler(estimator={est_var}, val_size={self.val_size}, random_state={self.random_state})"
+        lines.append(init_line)
+
+        # If fitted, add selected scaler info
+        if hasattr(self, "best_scaler_"):
+            lines.append(f"# Selected x_method='{self.best_x_method_}', y_method='{self.best_y_method_}' with score: {self.best_score_:.6f}")
+
+        return "\n".join(lines)
+
+    @typed
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AutoScaler":
+        """Fits multiple scalers and selects the best one."""
+        # Define scaling combinations to try
+        scaling_methods = [("standard", "standard"), ("power", "power"), ("quantile-normal", "quantile-normal")]
+
+        # Split data into train and validation sets
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=self.val_size, random_state=self.random_state)
+
+        # Try each scaling method
+        best_score = float("inf")
+        best_scaler = None
+        best_x_method = None
+        best_y_method = None
+
+        for x_method, y_method in scaling_methods:
+            # Create and fit scaler
+            scaler = Scaler(clone(self.estimator), x_method=x_method, y_method=y_method)
+
+            try:
+                scaler.fit(X_train, y_train)
+                # Evaluate on validation set
+                y_val_pred = scaler.predict(X_val)
+                score = mean_squared_error(y_val, y_val_pred)
+                # Update best if better
+                if score < best_score:
+                    best_score = score
+                    best_scaler = scaler
+                    best_x_method = x_method
+                    best_y_method = y_method
+            except Exception as e:
+                print(f"Error with x_method={x_method}, y_method={y_method}: {str(e)}")
+                continue
+
+        if best_scaler is None:
+            raise ValueError("No valid scaling method found. All combinations failed.")
+
+        # Store best configuration
+        self.best_x_method_ = best_x_method
+        self.best_y_method_ = best_y_method
+        self.best_score_ = best_score
+
+        # Refit the best scaler on the full dataset
+        self.best_scaler_ = Scaler(clone(self.estimator), x_method=best_x_method, y_method=best_y_method)
+        self.best_scaler_.fit(X, y)
+
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        """Predicts using the best selected scaler."""
+        if not hasattr(self, "best_scaler_"):
+            raise RuntimeError("AutoScaler instance is not fitted yet. Call 'fit' first.")
+        return self.best_scaler_.predict(X)
 
 
 class DebugEstimator(BaseEstimator, RegressorMixin):

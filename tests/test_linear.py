@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
-from better_regressions import Linear, Scaler, Smooth
+from better_regressions import AutoScaler, Linear, Scaler, Smooth
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.datasets import make_regression
@@ -278,9 +278,11 @@ def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.2):
         ("Linear-Standard", lambda: Scaler(Linear(alpha=1e-6), x_method="standard", y_method="standard")),
         ("Linear-Power", lambda: Scaler(Linear(alpha=1e-6), x_method="power", y_method="power")),
         ("Linear-Quantile", lambda: Scaler(Linear(alpha=1e-6), x_method="quantile-normal", y_method="quantile-normal")),
+        ("Linear-Auto", lambda: AutoScaler(Linear(alpha=1e-6))),
         ("Angle-Standard", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard")),
         ("Angle-Power", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power")),
         ("Angle-Quantile", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal")),
+        ("Angle-Auto", lambda: AutoScaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5))),
     ]
 
     results = []

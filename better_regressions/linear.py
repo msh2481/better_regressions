@@ -35,9 +35,9 @@ class Linear(RegressorMixin, BaseEstimator):
     @typed
     def __repr__(self, var_name: str = "model") -> str:
         if not hasattr(self, "coef_"):
-            return f"{var_name} = Linear(alpha={repr(self.alpha)}, better_bias={self.better_bias}, method='{self.method}', n_components={self.n_components})"
+            return f"{var_name} = Linear(alpha={repr(self.alpha)}, better_bias={self.better_bias})"
 
-        model_init = f"{var_name} = Linear(alpha={repr(self.alpha)}, better_bias={self.better_bias}, method='{self.method}', n_components={self.n_components})"
+        model_init = f"{var_name} = Linear(alpha={repr(self.alpha)}, better_bias={self.better_bias})"
         set_coef = f"{var_name}.coef_ = {format_array(self.coef_)}"
         set_intercept = f"{var_name}.intercept_ = {format_array(self.intercept_)}"
 
