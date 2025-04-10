@@ -7,18 +7,18 @@ from better_regressions.scaling import AutoScaler, Scaler
 from better_regressions.smoothing import Smooth
 from rich.console import Console
 from rich.table import Table
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import Matern, RBF, WhiteKernel
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold, train_test_split
-
 from tests.data import CURVES
 
 
-def generate_trading_dataset(n_samples: int = 1000, n_features: int = 10, seed: int = 42, noise_level: float = 0.0, noise_type: Literal["gaussian", "cauchy"] = "gaussian") -> tuple[np.ndarray, np.ndarray]:
+def generate_trading_dataset(n_samples: int = 2000, n_features: int = 10, seed: int = 42, noise_level: float = 0.5, noise_type: Literal["gaussian", "cauchy"] = "cauchy") -> tuple[np.ndarray, np.ndarray]:
     """Generate a synthetic trading dataset.
 
     X features are distributed as Beta(5, 5) on [0, 1].
     y is defined as sum_i f_i(X_i), where f_i is given by i-th curve from data.py.
-    y is shifted so that only 20% of points are profitable.
 
     Args:
         n_samples: Number of data points to generate
@@ -31,31 +31,36 @@ def generate_trading_dataset(n_samples: int = 1000, n_features: int = 10, seed: 
         X: Feature matrix with shape (n_samples, n_features)
         y: Target vector with shape (n_samples,)
     """
+    n_features = min(n_features, len(CURVES))
     rng = np.random.RandomState(seed)
 
-    # Generate Beta(5, 5) distributed features on [0, 1]
-    X = rng.beta(5, 5, size=(n_samples, n_features))
+    X = rng.beta(20, 20, size=(n_samples, n_features))
+    scales0 = np.exp(rng.randn(n_features))
+    scales1 = np.exp(rng.randn(n_features))
 
     # Initialize target
     y = np.zeros(n_samples)
 
     # For each feature, add the corresponding curve value using interpolation
-    for i in range(min(n_features, len(CURVES))):
+    for i in range(n_features):
         # Create x points for interpolation (normalized curve indices)
         x_points = np.linspace(0, 1, len(CURVES[i]))
+        scales = scales0[i] + (scales1[i] - scales0[i]) * np.linspace(-1, 1, n_samples) ** 3
         # Interpolate using feature values
-        y += np.interp(X[:, i], x_points, CURVES[i])
+        y += np.interp(X[:, i], x_points, CURVES[i]) * scales
 
     # Add noise if specified
     if noise_level > 0:
         if noise_type == "gaussian":
-            y += rng.randn(size=n_samples) * noise_level
+            X += rng.randn(n_samples, n_features) * (noise_level * X.std(axis=0, keepdims=True))
+            y += rng.randn(n_samples) * noise_level * y.std()
         elif noise_type == "cauchy":
-            y += rng.standard_cauchy(size=n_samples) * noise_level
+            C = 20
+            X += np.clip(rng.standard_cauchy(size=(n_samples, n_features)), -C, C) * (noise_level * X.std(axis=0, keepdims=True))
+            y += np.clip(rng.standard_cauchy(size=n_samples), -C, C) * noise_level * y.std()
 
-    # Shift y so that only 20% of points are profitable
-    percentile_80 = np.percentile(y, 80)
-    y -= percentile_80
+    baseline = np.percentile(y, 70)
+    y -= baseline
 
     return X, y
 
@@ -63,12 +68,12 @@ def generate_trading_dataset(n_samples: int = 1000, n_features: int = 10, seed: 
 def test_visualize_trading_dataset():
     """Visualize the generated trading dataset."""
     # Generate dataset
-    X, y = generate_trading_dataset(n_samples=1000, n_features=10, noise_level=5.0)
+    X, y = generate_trading_dataset(n_features=10)
 
     # Visualize X0 distribution
     plt.figure(figsize=(6, 4))
     plt.hist(X[:, 0], bins=30, alpha=0.7)
-    plt.title("X0 Distribution (Beta(5, 5))")
+    plt.title("X0 Distribution")
     plt.xlabel("X0")
     plt.ylabel("Frequency")
     plt.savefig("x0_distribution.png")
@@ -121,7 +126,7 @@ def calculate_metrics(model: Callable, X_train: np.ndarray, y_train: np.ndarray,
     mse = mean_squared_error(y_test, preds)
 
     # Calculate profit: max(prediction, 0) * actual_y
-    profits = np.maximum(preds, 0) * y_test
+    profits = np.clip(preds, 0, 0.1 * y_train.std()) * y_test
 
     # Calculate mean profit and Sharpe ratio
     mean_profit = np.mean(profits)
@@ -133,19 +138,25 @@ def calculate_metrics(model: Callable, X_train: np.ndarray, y_train: np.ndarray,
 def test_trading_regressors():
     """Test different regressors on the trading dataset."""
     # Generate dataset with noise
-    X, y = generate_trading_dataset(n_samples=2000, n_features=10, noise_level=10.0, noise_type="gaussian")
+    X, y = generate_trading_dataset(n_features=10)
 
     # Split into train and test
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 
     # Models to test
-    models = {"Scaler(Linear())": Scaler(Linear()), "AutoScaler(Linear())": AutoScaler(Linear()), "AutoScaler(Smooth('angle'))": AutoScaler(Smooth(method="angle"))}
+    models = {
+        "Scaler(Linear())": Scaler(Linear()),
+        "AutoScaler(Linear())": AutoScaler(Linear()),
+        "AutoScaler(Smooth('angle'))": AutoScaler(Smooth(method="angle")),
+        "Scaler(GP(Matern() + WhiteKernel()))": Scaler(GaussianProcessRegressor(kernel=Matern() + WhiteKernel())),
+        "Scaler(GP(RBF() + WhiteKernel()))": Scaler(GaussianProcessRegressor(kernel=RBF() + WhiteKernel())),
+    }
 
     # Results storage
     results = {name: {"mse": [], "profit": [], "sharpe": []} for name in models}
 
     # Cross-validation with multiple folds
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    kf = KFold(n_splits=5, shuffle=True)  # , random_state=42)
 
     for train_idx, val_idx in kf.split(X_train):
         X_fold_train, X_fold_val = X_train[train_idx], X_train[val_idx]
@@ -182,8 +193,5 @@ def test_trading_regressors():
 
 
 if __name__ == "__main__":
-    # Run visualizations
     test_visualize_trading_dataset()
-
-    # Run regressor comparisons
     test_trading_regressors()
