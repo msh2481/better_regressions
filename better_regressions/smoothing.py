@@ -37,6 +37,7 @@ class Smooth(RegressorMixin, BaseEstimator):
         val_size: float = 0.2,
         patience: int = 2,
         n_breakpoints: int = 1,
+        # extrapolation_margin: float = 0.0,
     ):
         super().__init__()
         self.method = method
@@ -47,6 +48,7 @@ class Smooth(RegressorMixin, BaseEstimator):
         self.val_size = val_size
         self.patience = patience
         self.n_breakpoints = n_breakpoints
+        # self.extrapolation_margin = extrapolation_margin
 
     @typed
     def _get_smoother(self) -> object:
@@ -74,8 +76,9 @@ class Smooth(RegressorMixin, BaseEstimator):
 
         points_repr = f"{var_name}.feature_points_ = {format_array(self.feature_points_)}"
         values_repr = f"{var_name}.feature_values_ = {format_array(self.feature_values_)}"
+        # extrapolation_repr = f"{var_name}.extrapolation_margin = {self.extrapolation_margin}"
 
-        return "\n".join([model_init, points_repr, values_repr])
+        return "\n".join([model_init, points_repr, values_repr])  # , extrapolation_repr])
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Smooth":
@@ -89,10 +92,11 @@ class Smooth(RegressorMixin, BaseEstimator):
         for j in range(n_features):
             feature_min = np.min(X[:, j])
             feature_max = np.max(X[:, j])
-            # extend by 20% on each side
+
             d = feature_max - feature_min
-            feature_min -= 0.2 * d
-            feature_max += 0.2 * d
+            self.extrapolation_margin = 0.0  # TODO: make a field
+            feature_min -= self.extrapolation_margin * d
+            feature_max += self.extrapolation_margin * d
             self.feature_points_[j] = np.linspace(feature_min, feature_max, self.n_points, endpoint=True)
 
         # Handle early stopping setup
