@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from beartype import beartype as typed
 from better_regressions import AutoScaler, Linear, Scaler, Smooth
+
+from better_regressions.linear import Soft
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.datasets import make_regression
@@ -244,7 +246,7 @@ def benchmark_nonlinear_datasets(n_runs: int = 3, test_size: float = 0.2):
 
 
 @typed
-def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.2):
+def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.5):
     """Benchmark Linear regression with various scalers on transformed Gaussian data.
 
     This benchmark:
@@ -275,14 +277,20 @@ def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.2):
 
     # Models (Linear with various scalers)
     models = [
+        ("SoftLinear-Stabilize-0.5", lambda: Scaler(Soft(splits=[0.5], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
+        ("SoftLinear-Stabilize-0.25-0.75", lambda: Scaler(Soft(splits=[0.25, 0.75], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
+        ("SoftLinear-Stabilize-0.1-0.3-0.7-0.9", lambda: Scaler(Soft(splits=[0.1, 0.3, 0.7, 0.9], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
+        # ...
+        ("Linear-Stabilize", lambda: Scaler(Linear(alpha=1e-6), x_method="stabilize", y_method="stabilize")),
         ("Linear-Standard", lambda: Scaler(Linear(alpha=1e-6), x_method="standard", y_method="standard")),
-        ("Linear-Power", lambda: Scaler(Linear(alpha=1e-6), x_method="power", y_method="power")),
+        # ("Linear-Power", lambda: Scaler(Linear(alpha=1e-6), x_method="power", y_method="power")),
         ("Linear-Quantile", lambda: Scaler(Linear(alpha=1e-6), x_method="quantile-normal", y_method="quantile-normal")),
-        ("Linear-Auto", lambda: AutoScaler(Linear(alpha=1e-6))),
+        # ("Linear-Auto", lambda: AutoScaler(Linear(alpha=1e-6))),
+        ("Angle-Stabilize", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="stabilize", y_method="stabilize")),
         ("Angle-Standard", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard")),
-        ("Angle-Power", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power")),
+        # ("Angle-Power", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power")),
         ("Angle-Quantile", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal")),
-        ("Angle-Auto", lambda: AutoScaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5))),
+        # ("Angle-Auto", lambda: AutoScaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5))),
     ]
 
     results = []

@@ -12,6 +12,56 @@ from sklearn.preprocessing import PowerTransformer, QuantileTransformer, Standar
 from better_regressions.utils import format_array
 
 
+class Stabilize(BaseEstimator):
+    def __init__(self, k: float = 1.0):
+        self.k = k
+
+    @typed
+    def _process_col(self, arr: Float[ND, "n_samples"]) -> tuple[float, float, float, float]:
+        assert arr.ndim == 1
+        unique = np.unique(arr)
+        median_ = np.median(arr)
+        if len(unique) < 100:
+            min_ = np.min(unique)
+            max_ = np.max(unique)
+        else:
+            min_, max_ = np.percentile(arr, [2, 98])
+            rng = max_ - min_ + 1e-9
+            min_ = median_ - self.k * rng
+            max_ = median_ + self.k * rng
+        scale_ = 0.5 * (max_ - min_) + 1e-9
+        return min_, max_, median_, scale_
+
+    @typed
+    def fit(self, arr: Float[ND, "n_samples"] | Float[ND, "n_samples n_features"], y=None):
+        arr = np.asarray(arr)
+        if arr.ndim == 1:
+            arr = arr.ravel()
+            self.min_, self.max_, self.median_, self.scale_ = self._process_col(arr)
+        else:
+            self.min_ = np.zeros(arr.shape[1])
+            self.max_ = np.zeros(arr.shape[1])
+            self.median_ = np.zeros(arr.shape[1])
+            self.scale_ = np.zeros(arr.shape[1])
+            for i in range(arr.shape[1]):
+                self.min_[i], self.max_[i], self.median_[i], self.scale_[i] = self._process_col(arr[:, i])
+        return self
+
+    @typed
+    def transform(self, arr: Float[ND, "n_samples"] | Float[ND, "n_samples n_features"]):
+        arr = np.asarray(arr)
+        arr = np.clip(arr, self.min_, self.max_)
+        return (arr - self.median_) / self.scale_
+
+    def fit_transform(self, arr: Float[ND, "n_samples"] | Float[ND, "n_samples n_features"]):
+        return self.fit(arr).transform(arr)
+
+    @typed
+    def inverse_transform(self, arr: Float[ND, "n_samples"] | Float[ND, "n_samples n_features"]):
+        arr = np.asarray(arr)
+        return arr * self.scale_ + self.median_
+
+
 class SecondMomentScaler(BaseEstimator, RegressorMixin):
     """Scales data by dividing by the square root of the second moment (mean of squares)"""
 
@@ -47,21 +97,12 @@ class Scaler(BaseEstimator, RegressorMixin):
         use_feature_variance: If True, normalize y based on sqrt(sum(var(X_scaled))) before y_method
     """
 
-    def __init__(self, estimator, x_method: str = "standard", y_method: str = "standard", use_feature_variance: bool = True):
+    def __init__(self, estimator, x_method: str = "stabilize", y_method: str = "stabilize", use_feature_variance: bool = True):
         self.estimator = estimator
         self.x_method = x_method
         self.y_method = y_method
         self.use_feature_variance = use_feature_variance
-        self._validate_methods()
         self.estimator_ = clone(estimator)
-
-    def _validate_methods(self):
-        """Validate scaling method names."""
-        valid_methods = ["none", "standard", "quantile-uniform", "quantile-normal", "power"]
-        if self.x_method not in valid_methods:
-            raise ValueError(f"Invalid x_method: {self.x_method}. Choose from {valid_methods}")
-        if self.y_method not in valid_methods:
-            raise ValueError(f"Invalid y_method: {self.y_method}. Choose from {valid_methods}")
 
     def _get_transformer(self, method: str):
         """Get transformer instance based on method name."""
@@ -75,6 +116,10 @@ class Scaler(BaseEstimator, RegressorMixin):
             return QuantileTransformer(output_distribution="normal", n_quantiles=20)
         elif method == "power":
             return PowerTransformer()
+        elif method == "stabilize":
+            return Stabilize()
+        else:
+            raise ValueError(f"Invalid method: {method}")
 
     @typed
     def __repr__(self, var_name: str = "model") -> str:
@@ -111,6 +156,12 @@ class Scaler(BaseEstimator, RegressorMixin):
                 if hasattr(self.x_transformer_, "_scaler"):
                     lines.append(f"{var_name}.x_transformer_._scaler.scale_ = {format_array(self.x_transformer_._scaler.scale_)}")
                     lines.append(f"{var_name}.x_transformer_._scaler.mean_ = {format_array(self.x_transformer_._scaler.mean_)}")
+            elif isinstance(self.x_transformer_, Stabilize):
+                lines.append(f"{var_name}.x_transformer_ = Stabilize()")
+                lines.append(f"{var_name}.x_transformer_.median_ = {format_array(self.x_transformer_.median_)}")
+                lines.append(f"{var_name}.x_transformer_.min_ = {format_array(self.x_transformer_.min_)}")
+                lines.append(f"{var_name}.x_transformer_.max_ = {format_array(self.x_transformer_.max_)}")
+                lines.append(f"{var_name}.x_transformer_.scale_ = {format_array(self.x_transformer_.scale_)}")
 
             # Y transformer
             if isinstance(self.y_transformer_, SecondMomentScaler):
@@ -132,6 +183,12 @@ class Scaler(BaseEstimator, RegressorMixin):
                 if hasattr(self.y_transformer_, "_scaler"):
                     lines.append(f"{var_name}.y_transformer_._scaler.scale_ = {format_array(self.y_transformer_._scaler.scale_)}")
                     lines.append(f"{var_name}.y_transformer_._scaler.mean_ = {format_array(self.y_transformer_._scaler.mean_)}")
+            elif isinstance(self.y_transformer_, Stabilize):
+                lines.append(f"{var_name}.y_transformer_ = Stabilize()")
+                lines.append(f"{var_name}.y_transformer_.median_ = {format_array(self.y_transformer_.median_)}")
+                lines.append(f"{var_name}.y_transformer_.min_ = {format_array(self.y_transformer_.min_)}")
+                lines.append(f"{var_name}.y_transformer_.max_ = {format_array(self.y_transformer_.max_)}")
+                lines.append(f"{var_name}.y_transformer_.scale_ = {format_array(self.y_transformer_.scale_)}")
 
             # Add y_min_ and y_max_ if using PowerTransformer
             if isinstance(self.y_transformer_, PowerTransformer) and hasattr(self, "y_min_") and hasattr(self, "y_max_"):
@@ -158,7 +215,6 @@ class Scaler(BaseEstimator, RegressorMixin):
         y_to_transform = y_2d / self.y_norm_factor_
         y_scaled = self.y_transformer_.fit_transform(y_to_transform).ravel()
 
-        # Store min/max bounds if using PowerTransformer to handle out-of-bounds later
         if isinstance(self.y_transformer_, PowerTransformer):
             self.y_min_ = np.min(y_scaled)
             self.y_max_ = np.max(y_scaled)
@@ -230,7 +286,7 @@ class AutoScaler(BaseEstimator, RegressorMixin):
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AutoScaler":
         """Fits multiple scalers and selects the best one."""
         # Define scaling combinations to try
-        scaling_methods = [("standard", "standard"), ("power", "power"), ("quantile-normal", "quantile-normal")]
+        scaling_methods = [("stabilize", "stabilize"), ("standard", "standard"), ("power", "power"), ("quantile-normal", "quantile-normal")]
 
         # Split data into train and validation sets
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=self.val_size, random_state=self.random_state)

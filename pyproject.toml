@@ -25,6 +25,7 @@ dependencies = [
     "setuptools>=78.1.0",
     "build>=1.2.2.post1",
     "twine>=6.1.0",
+    "xgboost>=3.0.0",
 ]
 
 [project.optional-dependencies]
