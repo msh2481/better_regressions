@@ -3,6 +3,8 @@ import numpy as np
 from beartype import beartype as typed
 
 from better_regressions import Angle, AutoScaler, Linear, Scaler, Silencer, Smooth
+
+from better_regressions.linear import Soft
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -31,10 +33,11 @@ def test_piecewise_linear():
 
     models = {
         "Linear": Scaler(Linear()),
-        "Angle (5 breakpoints)": Angle(n_breakpoints=5, random_state=42),
+        # "Angle (5 breakpoints)": Angle(n_breakpoints=5, random_state=42),
         "Angle (10 breakpoints)": Angle(n_breakpoints=10, random_state=42),
-        "Angle (20 breakpoints)": Angle(n_breakpoints=20, random_state=42),
-        "Smooth": Smooth(max_epochs=30, lr=0.1),
+        # "Angle (20 breakpoints)": Angle(n_breakpoints=20, random_state=42),
+        # "Smooth": Smooth(max_epochs=30, lr=0.1),
+        "SoftLinear-Stabilize-0.1-0.3-0.7-0.9": Scaler(Soft(splits=[0.1, 0.3, 0.7, 0.9], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize"),
     }
 
     plt.figure(figsize=(12, 6))
@@ -223,6 +226,6 @@ def test_exp_sqrt_transformation():
 
 
 if __name__ == "__main__":
-    # test_piecewise_linear()
+    test_piecewise_linear()
     # test_step_function()
-    test_exp_sqrt_transformation()
+    # test_exp_sqrt_transformation()
