@@ -9,11 +9,13 @@ from loguru import logger
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
 from numpy import ndarray as ND
-from scipy.stats import t as t_student
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import pearsonr, spearmanr, t as t_student
 from sklearn.base import BaseEstimator, clone, RegressorMixin
 from sklearn.cluster import KMeans
 from sklearn.datasets import make_regression
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
+from sklearn.neighbors import KNeighborsRegressor
 from sklearn.preprocessing import PowerTransformer
 
 from better_regressions.linear import Linear
@@ -22,14 +24,17 @@ from better_regressions.smoothing import Smooth
 
 
 @typed
-def plot_distribution(samples: Float[ND, "n_samples"]):
+def plot_distribution(samples: Float[ND, "n_samples"], name: str):
     min_value = np.min(samples)
     max_value = np.max(samples)
     mean = np.mean(samples)
     std = np.std(samples)
     df, loc, scale = t_student.fit(samples)
     plt.figure(figsize=(10, 6))
-    plt.title(f"$\\mu={mean:.2f}$, $\\sigma={std:.2f}$ | $\\mu_t={loc:.2f}$, $\\sigma_t={scale:.2f}$, $\\nu={df:.2f}$\nrange: {min_value:.2f} to {max_value:.2f}")
+    title = f"$\\mu={mean:.2f}$, $\\sigma={std:.2f}$ | $\\mu_t={loc:.2f}$, $\\sigma_t={scale:.2f}$, $\\nu={df:.2f}$\nrange: {min_value:.2f} to {max_value:.2f}"
+    if name:
+        title = f"{name}\n{title}"
+    plt.title(title)
     ql, qr = np.percentile(samples, [2, 98])
     samples = np.clip(samples, ql, qr)
     sns.histplot(
@@ -43,11 +48,18 @@ def plot_distribution(samples: Float[ND, "n_samples"]):
 
 
 @typed
-def plot_trend(x: Float[ND, "n_samples"], y: Float[ND, "n_samples"], discrete_threshold: int = 50):
+def plot_trend(x: Float[ND, "n_samples"], y: Float[ND, "n_samples"], discrete_threshold: int = 50, name: str = None):
     if len(np.unique(x)) < discrete_threshold:
         plot_trend_discrete(x, y)
     else:
         plot_trend_continuous(x, y)
+
+    pearson_corr = pearsonr(x, y)[0]
+    spearman_corr = spearmanr(x, y)[0]
+    title = f"Pearson: ${pearson_corr*100:.1f}\%$, Spearman: ${spearman_corr*100:.1f}\%$"
+    if name:
+        title = f"{name}\n{title}"
+    plt.title(title)
 
 
 @typed
@@ -98,21 +110,44 @@ def plot_trend_discrete(x: Float[ND, "n_samples"], y: Float[ND, "n_samples"]):
         inner="quart",
         fill=False,
     )
-    plt.show()
 
 
 @typed
 def plot_trend_continuous(x: Float[ND, "n_samples"], y: Float[ND, "n_samples"]):
-    pass
+    argsort = np.argsort(x)
+    x = x[argsort]
+    y = y[argsort]
+    ql, qr = np.percentile(x, [2, 98])
+    x = np.clip(x, ql, qr)
+    ql, qr = np.percentile(y, [2, 98])
+    y = np.clip(y, ql, qr)
+
+    model = Scaler(Smooth(n_breakpoints=2))
+    model.fit(x.reshape(-1, 1), y)
+    y_pred = model.predict(x.reshape(-1, 1))
+
+    deviations = y - y_pred
+    squared_devs = deviations**2
+    y_var = gaussian_filter1d(squared_devs, sigma=0.2 * np.std(np.arange(len(x))))
+    variance_model = KNeighborsRegressor(n_neighbors=max(5, len(x) // 5))
+    variance_model.fit(x.reshape(-1, 1), y_var)
+
+    x_range = np.linspace(np.min(x), np.max(x), 200)
+    y_var = variance_model.predict(x_range.reshape(-1, 1))
+    y_std = np.sqrt(y_var)
+    y_trend = model.predict(x_range.reshape(-1, 1))
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x, y, "ok", ms=4, alpha=0.2)
+    plt.plot(x_range, y_trend, color="k", linewidth=4, alpha=0.5)
+    plt.fill_between(x_range, y_trend - y_std, y_trend + y_std, alpha=0.2, color="k")
 
 
 def test_plots():
-    np.random.seed(42)
-    x_discrete = np.concatenate([np.ones(50) * 1, np.ones(70) * 3, np.ones(40) * 5, np.ones(60) * 7, np.ones(30) * 9])
-    y_values = np.concatenate([np.random.normal(10, 2, 50), np.random.standard_t(5, 70) * 2 + 15, np.random.gamma(2, 2, 40) + 5, np.random.normal(20, 4, 60), np.random.standard_cauchy(30) * 0.5 + 25])  # cluster 1: normal  # cluster 3: t-distribution  # cluster 5: gamma  # cluster 7: normal  # cluster 9: cauchy
-    # x_discrete += np.random.normal(0, 0.1, len(x_discrete))
-
-    plot_trend_discrete(x_discrete, y_values)
+    x = np.random.standard_cauchy(1000)
+    noise = np.random.standard_cauchy(len(x)) * x * 0.05
+    y = np.sin(x) + noise
+    plot_trend(x, y, name="Sine with noise")
     plt.show()
 
 
