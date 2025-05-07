@@ -16,6 +16,11 @@ Advanced regression methods with an sklearn-like interface.
 - `Soft`: Mixture of regressors based on quantile classification
 - `Stabilize`: Robust scaling & clipping transformation for features/targets
 - `AutoClassifier`: Classification with automatic model selection (LogisticRegression or XGBoost, with auto depth selection)
+- `EDA`: Exploratory Data Analysis utilities
+  - `plot_distribution`: Visualize sample distributions with fitted t-distribution parameters
+  - `plot_trend`: Automatically detect and visualize relationships between variables + Pearson/Spearman correlation
+    - For discrete features: Shows violin plots with distribution at each value
+    - For continuous features: Fits trend lines with variance estimation and confidence intervals
 
 ## Installation
 
@@ -27,6 +32,7 @@ pip install better-regressions
 
 ```python
 from better_regressions import auto_angle, auto_linear, Linear, Scaler, AutoClassifier
+from better_regressions.eda import plot_distribution, plot_trend
 from sklearn.datasets import make_regression, make_moons
 import numpy as np
 
@@ -42,4 +48,8 @@ Xc, yc = dataset
 clf = AutoClassifier(depth="auto")
 clf.fit(Xc, yc)
 yc_pred = clf.predict(Xc)
+
+# EDA example
+plot_distribution(y, name="Target Distribution")
+plot_trend(X[:, 0], y, name="Feature 0 vs Target")
 ```
