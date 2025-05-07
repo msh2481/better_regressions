@@ -26,6 +26,7 @@ dependencies = [
     "build>=1.2.2.post1",
     "twine>=6.1.0",
     "xgboost>=3.0.0",
+    "seaborn>=0.13.2",
 ]
 
 [project.optional-dependencies]
