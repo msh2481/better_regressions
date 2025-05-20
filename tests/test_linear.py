@@ -3,14 +3,14 @@
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
-from better_regressions import AutoScaler, Linear, Scaler, Smooth
-
+from better_regressions import AutoScaler, binning_regressor, Linear, Scaler, Smooth
 from better_regressions.linear import Soft
 from jaxtyping import Float
 from numpy import ndarray as ND
 from sklearn.datasets import make_regression
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
 
 
 def test_linear_better_bias_equivalence():
@@ -277,7 +277,9 @@ def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.5):
 
     # Models (Linear with various scalers)
     models = [
-        ("SoftLinear-Stabilize-0.5", lambda: Scaler(Soft(splits=[0.5], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
+        ("BinningRegressor", lambda: binning_regressor()),
+        ("XGBRegressor", lambda: XGBRegressor(n_estimators=300, max_depth=3)),
+        # ("SoftLinear-Stabilize-0.5", lambda: Scaler(Soft(splits=[0.5], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
         ("SoftLinear-Stabilize-0.25-0.75", lambda: Scaler(Soft(splits=[0.25, 0.75], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
         ("SoftLinear-Stabilize-0.1-0.3-0.7-0.9", lambda: Scaler(Soft(splits=[0.1, 0.3, 0.7, 0.9], estimator=Linear(alpha="bayes")), x_method="stabilize", y_method="stabilize")),
         # ...
@@ -287,7 +289,7 @@ def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.5):
         ("Linear-Quantile", lambda: Scaler(Linear(alpha=1e-6), x_method="quantile-normal", y_method="quantile-normal")),
         # ("Linear-Auto", lambda: AutoScaler(Linear(alpha=1e-6))),
         ("Angle-Stabilize", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="stabilize", y_method="stabilize")),
-        ("Angle-Standard", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard")),
+        # ("Angle-Standard", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="standard", y_method="standard")),
         # ("Angle-Power", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="power", y_method="power")),
         ("Angle-Quantile", lambda: Scaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5), x_method="quantile-normal", y_method="quantile-normal")),
         # ("Angle-Auto", lambda: AutoScaler(Smooth(method="angle", n_breakpoints=2, max_epochs=100, lr=0.5))),
@@ -295,44 +297,38 @@ def benchmark_transformed_data(n_runs: int = 5, test_size: float = 0.5):
 
     results = []
 
-    for run in range(n_runs):
-        print(f"Starting run {run+1}/{n_runs}...")
+    # For each combination of X and Y transformation
+    for x_name, x_transform in x_transformations:
+        for y_name, y_transform in y_transformations:
+            if x_name == y_name:
+                continue
+            for model_name, model_fn in models:
+                mses: list[float] = []
+                for run in range(n_runs):
+                    X_base, y_base = generate_regression(n_samples=2000, n_features=5, noise=1.0)
 
-        # For each combination of X and Y transformation
-        for x_name, x_transform in x_transformations:
-            for y_name, y_transform in y_transformations:
-                # Skip if X and Y use the same transformation type
-                if x_name == y_name:
-                    continue
+                    X = np.copy(X_base)
+                    for j in range(X.shape[1]):
+                        X[:, j] = x_transform(X_base[:, j])
+                    y = y_transform(y_base / np.std(y_base))
 
-                # Generate base regression data
-                X_base, y_base = generate_regression(n_samples=2000, n_features=5, noise=1.0)
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=run)
 
-                # Apply transformations
-                X = np.copy(X_base)
-                for j in range(X.shape[1]):
-                    X[:, j] = x_transform(X_base[:, j])
-                y = y_transform(y_base / np.std(y_base))
-
-                # Train/test split
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=run)
-
-                for model_name, model_fn in models:
-                    model = model_fn()
-
-                    # Fit and predict
                     assert not np.any(np.isnan(X_train)), "X_train contains NaNs"
                     assert not np.any(np.isnan(y_train)), "y_train contains NaNs"
+                    model = model_fn()
                     model.fit(X_train, y_train)
                     y_pred = model.predict(X_test)
                     assert not np.any(np.isnan(y_pred)), "y_pred contains NaNs"
-                    # test_mse = mean_squared_error(y_test, y_pred)
                     test_mse = np.max(np.abs(y_test - y_pred))
 
-                    # Store results
                     results.append({"x_transform": x_name, "y_transform": y_name, "model": model_name, "run": run, "test_mse": test_mse})
+                    mses.append(test_mse)
 
-                    print(f"  X:{x_name}, Y:{y_name}, {model_name}: MSE = {test_mse:.6f}")
+                median = float(np.median(mses))
+                min_mse = float(min(mses))
+                max_mse = float(max(mses))
+                print(f"  X:{x_name}, Y:{y_name}, {model_name}: {median:.6f} [{min_mse:.6f}, {max_mse:.6f}]")
 
     # Convert to dataframe and analyze
     df = pd.DataFrame(results)
