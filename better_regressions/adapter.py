@@ -84,6 +84,18 @@ class Adapter(BaseEstimator, TransformerMixin):
 
         X_binned = self._transform_X(X)
         y_binned = self.y_binner_.transform(y)
+        missing_classes = np.setdiff1d(np.arange(self.y_bins), np.unique(y_binned))
+        x_median = np.median(X_binned, axis=0)
+        add_to_X = []
+        add_to_y = []
+        for i in missing_classes:
+            add_to_X.append(x_median)
+            add_to_y.append(i)
+        if len(missing_classes):
+            add_to_X = np.stack(add_to_X, axis=0)
+            add_to_y = np.array(add_to_y)
+            X_binned = np.concatenate([X_binned, add_to_X], axis=0)
+            y_binned = np.concatenate([y_binned, add_to_y], axis=0)
 
         self.classifier_ = clone(self.classifier)
         with Silencer():
@@ -184,6 +196,17 @@ def binning_regressor(X_bins: int | None = None, y_bins: int | None = None):
     return model
 
 
+def test_missing_classes():
+    X = np.random.randn(10, 1)
+    y = np.random.randint(0, 3, size=10).astype(float)
+    model = binning_regressor(X_bins=20, y_bins=20)
+    model.fit(X, y)
+    print(model.predict_proba(X))
+    print(model.predict(X))
+    print(model.logpdf(X, y))
+    print(model.sample(X))
+
+
 def test_adapter():
     X = np.random.randn(1000, 1)
     mean = X
@@ -246,4 +269,4 @@ def test_max():
 
 
 if __name__ == "__main__":
-    test_max()
+    test_adapter()
