@@ -10,7 +10,7 @@ from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.datasets import make_regression
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from better_regressions.classifier import AutoClassifier
 from better_regressions.utils import format_array
@@ -25,6 +25,79 @@ def _repr_logistic_regression(estimator: LogisticRegression, var_name: str) -> s
     # Reconstruct classes_ based on coef_ shape, assuming default integer `classes_`
     lines.append(f"{var_name}.classes_ = {format_array(estimator.classes_)}")
     return "\n".join(lines)
+
+
+class AdaptiveRidge(RegressorMixin, BaseEstimator):
+    """Adaptive ridge regression with PLS feature transformation and correlation-based shrinkage."""
+
+    @typed
+    def __init__(
+        self,
+        use_pls: bool = True,
+        use_scaling: bool = True,
+        use_corr: bool = True,
+        alpha: Literal["bayes", "ard"] | float = "bayes",
+        better_bias: bool = True,
+    ):
+        self.use_pls = use_pls
+        self.use_scaling = use_scaling
+        self.use_corr = use_corr
+        self.alpha = alpha
+        self.better_bias = better_bias
+
+    @typed
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveRidge":
+        n_samples, n_features = X.shape
+        n_components = min(n_samples - 1, n_features)
+
+        if self.use_pls:
+            self.pls_ = PLSRegression(n_components=n_components, scale=False)
+        else:
+            self.pls_ = FunctionTransformer()
+        self.pls_.fit(X, y.reshape(-1, 1))
+        X_pls = self.pls_.transform(X)
+
+        if self.use_scaling:
+            self.scaler_ = StandardScaler()
+        else:
+            self.scaler_ = FunctionTransformer()
+        X_scaled = self.scaler_.fit_transform(X_pls)
+
+        if self.use_corr:
+            correlations = np.abs(np.array([np.corrcoef(X_scaled[:, i], y)[0, 1] for i in range(X_scaled.shape[1])]))
+            correlations = np.nan_to_num(correlations, 0)
+        else:
+            correlations = np.ones(n_features)
+
+        X_adaptive = X_scaled * correlations
+
+        self.linear_ = Linear(alpha=self.alpha, better_bias=self.better_bias)
+        self.linear_.fit(X_adaptive, y)
+
+        # I don't want to properly combine them all analytically, so just one more linear fit
+        I = np.eye(n_features)
+        I = np.vstack([I, np.zeros((1, n_features))])
+        after_pls = self.pls_.transform(I)
+        after_scaling = self.scaler_.transform(after_pls) * correlations
+        outputs = self.linear_.predict(after_scaling)
+        # Now just fit linear regression to this input-output mapping
+        helper_ridge = Ridge(alpha=1e-18)
+        helper_ridge.fit(I, outputs)
+        self.coef_ = helper_ridge.coef_
+        self.intercept_ = helper_ridge.intercept_
+
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        return X @ self.coef_ + self.intercept_
+
+    def __repr__(self, var_name: str = "model") -> str:
+        if not hasattr(self, "coef_"):
+            return f"{var_name} = AdaptiveRidge(n_components={self.n_components})"
+
+        lines = [f"{var_name} = AdaptiveRidge(n_components={self.n_components})", f"{var_name}.coef_ = {format_array(self.coef_)}", f"{var_name}.intercept_ = {format_array(self.intercept_)}"]
+        return "\n".join(lines)
 
 
 @typed
@@ -160,47 +233,4 @@ class Soft(BaseEstimator, RegressorMixin):
             lines.append(f"{var_name}.estimators_.append({est_name})")
             lines.append("")
 
-        return "\n".join(lines)
-
-
-class AdaptiveRidge(RegressorMixin, BaseEstimator):
-    """Adaptive ridge regression with PLS feature transformation and correlation-based shrinkage."""
-
-    @typed
-    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveRidge":
-        n_samples, n_features = X.shape
-        n_components = min(n_samples - 1, n_features)
-
-        self.pls_ = PLSRegression(n_components=n_components, scale=False)
-        self.pls_.fit(X, y.reshape(-1, 1))
-        X_pls = self.pls_.transform(X)
-
-        self.scaler_ = StandardScaler()
-        X_scaled = self.scaler_.fit_transform(X_pls)
-
-        correlations = np.abs(np.array([np.corrcoef(X_scaled[:, i], y)[0, 1] for i in range(X_scaled.shape[1])]))
-        correlations = np.nan_to_num(correlations, 0)
-
-        X_adaptive = X_scaled * correlations
-        self.ridge_ = BayesianRidge()
-        self.ridge_.fit(X_adaptive, y)
-
-        after_pls = self.pls_.transform(np.eye(n_features))
-        after_scaling = self.scaler_.transform(after_pls) * correlations
-        after_ridge = self.ridge_.predict(after_scaling)
-
-        self.coef_ = after_ridge
-        self.intercept_ = y.mean() - X.mean(axis=0) @ self.coef_
-
-        return self
-
-    @typed
-    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
-        return X @ self.coef_ + self.intercept_
-
-    def __repr__(self, var_name: str = "model") -> str:
-        if not hasattr(self, "coef_"):
-            return f"{var_name} = AdaptiveRidge(n_components={self.n_components})"
-
-        lines = [f"{var_name} = AdaptiveRidge(n_components={self.n_components})", f"{var_name}.coef_ = {format_array(self.coef_)}", f"{var_name}.intercept_ = {format_array(self.intercept_)}"]
         return "\n".join(lines)

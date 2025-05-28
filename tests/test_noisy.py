@@ -14,7 +14,7 @@ def test_noisy_features():
 
     true_coef = np.random.randn(d)
     X_true = np.random.randn(n_samples, d)
-    y = X_true @ true_coef
+    y = X_true @ true_coef + 1.0 * np.random.randn(n_samples)
 
     X_test = np.random.randn(n_test, d)
     y_test = X_test @ true_coef
@@ -22,7 +22,16 @@ def test_noisy_features():
     noise_levels = [0.5, 1.0, 2.0, 4.0]
     n_copies = 3
 
-    models = {"Linear": Linear(), "Linear(ARD)": Linear(alpha="ard"), "AdaptiveRidge": AdaptiveRidge(), "PLS": PLSRegression()}
+    models = {
+        "Linear": Linear(alpha=1e-18, better_bias=False),
+        "Linear'": Linear(alpha=1e-18),
+        "Linear(ARD)": Linear(alpha="ard", better_bias=False),
+        "Linear(ARD')": Linear(alpha="ard"),
+        "PLS": PLSRegression(n_components=d),
+        "AdaptiveRidge0000": AdaptiveRidge(use_pls=False, use_scaling=False, use_corr=False, alpha=1e-18),
+        "AdaptiveRidge": AdaptiveRidge(better_bias=False),
+        "AdaptiveRidge'": AdaptiveRidge(better_bias=True),
+    }
 
     print(f"True features: {d}")
     print(f"Noise levels per copy: {noise_levels}")
@@ -39,8 +48,10 @@ def test_noisy_features():
             noisy_test = X_test + noise_level * np.random.randn(X_test.shape[0], d)
             new_test_features.append(noisy_test)
 
-        X_train = X_true.copy()
-        X_test_full = X_test.copy()
+        # X_train = X_true.copy()
+        # X_test_full = X_test.copy()
+        X_train = np.hstack(new_features)
+        X_test_full = np.hstack(new_test_features)
 
         print(f"Features: {X_train.shape[1]} (added {n_copies} copies with noise={noise_level})")
 
@@ -48,6 +59,11 @@ def test_noisy_features():
             model_copy = clone(model)
             model_copy.fit(X_train, y)
             y_pred = model_copy.predict(X_test_full)
+
+            coef = model_copy.predict(np.eye(X_train.shape[1]))
+            intercept = model_copy.predict(np.zeros((1, X_train.shape[1]))).ravel()
+            # print(f"  {name}: coef = {coef}, intercept = {intercept}")
+
             mse = mean_squared_error(y_test, y_pred)
             print(f"  {name}: MSE = {mse:.4f}")
 
