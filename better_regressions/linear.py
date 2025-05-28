@@ -173,7 +173,6 @@ class AdaptiveRidge(RegressorMixin, BaseEstimator):
 
         self.pls_ = PLSRegression(n_components=n_components, scale=False)
         self.pls_.fit(X, y.reshape(-1, 1))
-
         X_pls = self.pls_.transform(X)
 
         self.scaler_ = StandardScaler()
@@ -183,7 +182,7 @@ class AdaptiveRidge(RegressorMixin, BaseEstimator):
         correlations = np.nan_to_num(correlations, 0)
 
         X_adaptive = X_scaled * correlations
-        self.ridge_ = BayesianRidge(fit_intercept=True)
+        self.ridge_ = BayesianRidge()
         self.ridge_.fit(X_adaptive, y)
 
         after_pls = self.pls_.transform(np.eye(n_features))
@@ -191,7 +190,7 @@ class AdaptiveRidge(RegressorMixin, BaseEstimator):
         after_ridge = self.ridge_.predict(after_scaling)
 
         self.coef_ = after_ridge
-        self.intercept_ = self.ridge_.intercept_
+        self.intercept_ = y.mean() - X.mean(axis=0) @ self.coef_
 
         return self
 

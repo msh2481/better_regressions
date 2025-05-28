@@ -41,8 +41,6 @@ def test_noisy_features():
 
         X_train = X_true.copy()
         X_test_full = X_test.copy()
-        X_train = np.hstack([X_train] + new_features)
-        X_test_full = np.hstack([X_test_full] + new_test_features)
 
         print(f"Features: {X_train.shape[1]} (added {n_copies} copies with noise={noise_level})")
 
