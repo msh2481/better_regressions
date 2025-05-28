@@ -6,9 +6,11 @@ from beartype.typing import Literal
 from jaxtyping import Float
 from loguru import logger
 from numpy import ndarray as ND
-from sklearn.base import BaseEstimator, clone, RegressorMixin
+from sklearn.base import BaseEstimator, RegressorMixin, clone
+from sklearn.cross_decomposition import PLSRegression
 from sklearn.datasets import make_regression
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
+from sklearn.preprocessing import StandardScaler
 
 from better_regressions.classifier import AutoClassifier
 from better_regressions.utils import format_array
@@ -158,4 +160,48 @@ class Soft(BaseEstimator, RegressorMixin):
             lines.append(f"{var_name}.estimators_.append({est_name})")
             lines.append("")
 
+        return "\n".join(lines)
+
+
+class AdaptiveRidge(RegressorMixin, BaseEstimator):
+    """Adaptive ridge regression with PLS feature transformation and correlation-based shrinkage."""
+
+    @typed
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveRidge":
+        n_samples, n_features = X.shape
+        n_components = min(n_samples - 1, n_features)
+
+        self.pls_ = PLSRegression(n_components=n_components, scale=False)
+        self.pls_.fit(X, y.reshape(-1, 1))
+
+        X_pls = self.pls_.transform(X)
+
+        self.scaler_ = StandardScaler()
+        X_scaled = self.scaler_.fit_transform(X_pls)
+
+        correlations = np.abs(np.array([np.corrcoef(X_scaled[:, i], y)[0, 1] for i in range(X_scaled.shape[1])]))
+        correlations = np.nan_to_num(correlations, 0)
+
+        X_adaptive = X_scaled * correlations
+        self.ridge_ = BayesianRidge(fit_intercept=True)
+        self.ridge_.fit(X_adaptive, y)
+
+        after_pls = self.pls_.transform(np.eye(n_features))
+        after_scaling = self.scaler_.transform(after_pls) * correlations
+        after_ridge = self.ridge_.predict(after_scaling)
+
+        self.coef_ = after_ridge
+        self.intercept_ = self.ridge_.intercept_
+
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        return X @ self.coef_ + self.intercept_
+
+    def __repr__(self, var_name: str = "model") -> str:
+        if not hasattr(self, "coef_"):
+            return f"{var_name} = AdaptiveRidge(n_components={self.n_components})"
+
+        lines = [f"{var_name} = AdaptiveRidge(n_components={self.n_components})", f"{var_name}.coef_ = {format_array(self.coef_)}", f"{var_name}.intercept_ = {format_array(self.intercept_)}"]
         return "\n".join(lines)
