@@ -8,11 +8,11 @@ from loguru import logger
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.datasets import make_regression
+from sklearn.decomposition import PCA
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
-from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from better_regressions.classifier import AutoClassifier
+from better_regressions.scaling import Scaler
 from better_regressions.utils import format_array
 
 
@@ -27,65 +27,131 @@ def _repr_logistic_regression(estimator: LogisticRegression, var_name: str) -> s
     return "\n".join(lines)
 
 
-class AdaptiveRidge(RegressorMixin, BaseEstimator):
-    """Adaptive ridge regression with PLS feature transformation and correlation-based shrinkage."""
+"""
+$ X^T X = n I,quad y^T y = 1 $
+$S = "diag"(s_1, dots, s_n)$ -- scaling factors
+
+$ y = X S S^-1 beta + epsilon, epsilon ~ cal(N)(0, sigma^2) $
+
+$ hat(beta) = arg min (1/2 norm(y - X S S^-1 hat(beta))^2 + 1/2 norm(S^-1 hat(beta))^2) $
+$ [ beta' = S^-1 hat(beta), quad X' = X S ] $
+$ beta' = arg min (1/2 norm(y - X' beta')^2 + 1/2 norm(beta')^2) $ 
+$ beta' = (X'^T X' + I)^(-1)X'^T y $
+$ hat(beta) = S(S X^T X S + I)^(-1) S X^T y $
+$ hat(beta) = (X^T X + S^(-2))^(-1) X^T y $
+$ hat(beta) = (X^T X + S^(-2))^(-1) X^T X beta + (X^T X + S^(-2))^(-1) X^T epsilon $
+$ EE[hat(beta)] = (I + 1/n S^(-2))^(-1) beta $
+$ "Cov"[hat(beta)] = 1/n sigma^2 (I + 1/n S^(-2))^(-2) $
+
+$ lambda = (1 + 1/(n s^2))^(-1) $
+$ "Bias"^2 = (1 - lambda)^2 beta^2 $
+$ "Var" = lambda^2 sigma^2 / n $
+$ (d cal(L)) / (d lambda) = (lambda - 1) beta^2 + lambda sigma^2 / n = 0 $
+$ lambda (beta^2 + sigma^2 / n) = beta^2 $
+$ lambda = beta^2 / (beta^2 + sigma^2 / n) $
+$ s^2 = 1 / (n(lambda^(-1) - 1)) = beta^2 / sigma^2 $
+$ s = beta / sigma $
+"""
+
+
+class Shrinker(BaseEstimator, RegressorMixin):
+    def __init__(self, alpha: Literal["bayes", "ard"] | float = "bayes", fit_intercept: bool = True):
+        super().__init__()
+        self.alpha = alpha
+        self.fit_intercept = fit_intercept
+
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Shrinker":
+        n, d = X.shape
+        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-6:
+            logger.error("X^T X should be n * I")
+        if np.abs((y**2).mean() - d) > 1e-6:
+            logger.error(f"mean y**2 should be d={d}, instead got {(y**2).mean()}")
+
+        if self.fit_intercept:
+            if np.abs(X.mean(axis=0)).max() > 1e-6:
+                logger.error("X should be centered")
+            X = np.hstack([X, np.ones((n, 1))])
+            d += 1
+            if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-6:
+                logger.error("X^T X should be n * I with intercept")
+
+        beta_ols = np.linalg.solve(X.T @ X + 1e-9 * np.eye(d), X.T @ y)
+        sigma = (y - X @ beta_ols).std() + 1e-10
+        scale = np.abs(beta_ols / sigma)[None, :]
+        X_scaled = X * scale
+
+        if self.alpha == "bayes":
+            solver = BayesianRidge(fit_intercept=False)
+            solver.fit(X_scaled, y)
+            coef = solver.coef_.ravel() * scale.ravel()
+        elif self.alpha == "ard":
+            solver = ARDRegression(fit_intercept=False)
+            solver.fit(X_scaled, y)
+            coef = solver.coef_.ravel() * scale.ravel()
+        else:
+            coef = np.linalg.solve(X_scaled.T @ X_scaled + self.alpha * np.eye(d), X_scaled.T @ y)
+            coef = coef.ravel() * scale.ravel()
+
+        if self.fit_intercept:
+            self.coef_ = coef[:-1]
+            self.intercept_ = coef[-1]
+        else:
+            self.coef_ = coef
+            self.intercept_ = 0
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples"]:
+        return X @ self.coef_ + self.intercept_
+
+
+class AdaptiveLinear(RegressorMixin, BaseEstimator):
+    """Ridge regression with adaptive shrinkage."""
 
     @typed
     def __init__(
         self,
-        use_pls: bool = True,
-        use_scaling: bool = True,
-        use_corr: bool = True,
-        alpha: Literal["bayes", "ard"] | float = "bayes",
-        better_bias: bool = True,
+        method: Literal["pls", "pca"] = "pls",
+        alpha: Literal["bayes", "ard"] | float = 1.0,
+        fit_intercept: bool = True,
     ):
-        self.use_pls = use_pls
-        self.use_scaling = use_scaling
-        self.use_corr = use_corr
+        super().__init__()
+        if not isinstance(alpha, float) or (abs(alpha - 1) > 1e-6):
+            logger.warning(f"alpha=1 is theoretically optimal, but you are using alpha={alpha}")
+        self.method = method
         self.alpha = alpha
-        self.better_bias = better_bias
+        self.fit_intercept = fit_intercept
 
     @typed
-    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveRidge":
+    def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveLinear":
         n_samples, n_features = X.shape
         n_components = min(n_samples - 1, n_features)
 
-        if self.use_pls:
-            self.pls_ = PLSRegression(n_components=n_components, scale=False)
-        else:
-            self.pls_ = FunctionTransformer()
-        self.pls_.fit(X, y.reshape(-1, 1))
-        X_pls = self.pls_.transform(X)
+        ortho = PCA(n_components=n_components) if self.method == "pca" else PLSRegression(n_components=n_components)
+        ortho.fit(X, y)
+        X_ortho = ortho.transform(X)
+        if self.fit_intercept:
+            X_ortho -= X_ortho.mean(axis=0, keepdims=True)
 
-        if self.use_scaling:
-            self.scaler_ = StandardScaler()
-        else:
-            self.scaler_ = FunctionTransformer()
-        X_scaled = self.scaler_.fit_transform(X_pls)
-
-        if self.use_corr:
-            correlations = np.abs(np.array([np.corrcoef(X_scaled[:, i], y)[0, 1] for i in range(X_scaled.shape[1])]))
-            correlations = np.nan_to_num(correlations, 0)
-        else:
-            correlations = np.ones(n_features)
-
-        X_adaptive = X_scaled * correlations
-
-        self.linear_ = Linear(alpha=self.alpha, better_bias=self.better_bias)
-        self.linear_.fit(X_adaptive, y)
-
+        solver = Scaler(
+            Shrinker(
+                alpha=self.alpha,
+                fit_intercept=self.fit_intercept,
+            ),
+            x_method="standard",
+            y_method="standard",
+            use_feature_variance=True,
+        )
+        solver.fit(X_ortho, y)
         # I don't want to properly combine them all analytically, so just one more linear fit
-        I = np.eye(n_features)
-        I = np.vstack([I, np.zeros((1, n_features))])
-        after_pls = self.pls_.transform(I)
-        after_scaling = self.scaler_.transform(after_pls) * correlations
-        outputs = self.linear_.predict(after_scaling)
+        inputs = np.eye(n_features)
+        inputs = np.vstack([inputs, np.zeros((1, n_features))])
+        outputs = solver.predict(ortho.transform(inputs))
         # Now just fit linear regression to this input-output mapping
         helper_ridge = Ridge(alpha=1e-18)
-        helper_ridge.fit(I, outputs)
+        helper_ridge.fit(inputs, outputs)
         self.coef_ = helper_ridge.coef_
         self.intercept_ = helper_ridge.intercept_
-
         return self
 
     @typed
@@ -234,3 +300,33 @@ class Soft(BaseEstimator, RegressorMixin):
             lines.append("")
 
         return "\n".join(lines)
+
+
+def test_adaptive():
+    from matplotlib import pyplot as plt
+
+    # x = np.linspace(0, 1, 4)[:, None]
+    # y = x.ravel() + 2 + 0.9 * np.random.randn(len(x))
+    # model = AdaptiveLinear(method="pca", alpha=1.0)
+    # model.fit(x, y)
+    # print(model.coef_)
+    # print(model.intercept_)
+    # p = model.predict(x)
+    # print(p)
+    # plt.plot(x, y)
+    # plt.plot(x, p)
+    # plt.show()
+
+    n, d = 100, 4
+    X = np.random.randn(n, d)
+    beta = np.random.randn(d)
+    y = X @ beta + np.random.randn(n)
+    model = AdaptiveLinear(method="pca", alpha=1.0)
+    model.fit(X, y)
+    print(model.coef_)
+    print(model.intercept_)
+    print(beta)
+
+
+if __name__ == "__main__":
+    test_adaptive()

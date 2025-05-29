@@ -3,7 +3,7 @@ from sklearn.base import clone
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.metrics import mean_squared_error
 
-from better_regressions.linear import AdaptiveRidge, Linear
+from better_regressions.linear import AdaptiveLinear, Linear
 
 
 def test_noisy_features():
@@ -22,10 +22,12 @@ def test_noisy_features():
         "Linear(ARD)": Linear(alpha="ard", better_bias=False),
         "Linear(ARD')": Linear(alpha="ard"),
         "PLS": PLSRegression(n_components=d),
-        "AdaptiveRidge0000": AdaptiveRidge(use_pls=False, use_scaling=False, use_corr=False, alpha=1e-18),
-        "AdaptiveRidge": AdaptiveRidge(better_bias=False),
-        "AdaptiveRidge'": AdaptiveRidge(better_bias=True),
-        "AdaptiveRidge'(ARD)": AdaptiveRidge(better_bias=True, alpha="ard"),
+        "AdaptiveRidge(pca, 1e-18)": AdaptiveLinear(method="pca", alpha=1e-9),
+        "AdaptiveRidge(pls, 1e-18)": AdaptiveLinear(method="pls", alpha=1e-9),
+        "AdaptiveRidge(pca, 1)": AdaptiveLinear(method="pca"),
+        "AdaptiveRidge(pls, 1)": AdaptiveLinear(method="pls"),
+        "AdaptiveRidge(pca, bayes)": AdaptiveLinear(method="pca", alpha="bayes"),
+        "AdaptiveRidge(pls, bayes)": AdaptiveLinear(method="pls", alpha="bayes"),
     }
 
     print(f"True features: {d}")
