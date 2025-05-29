@@ -7,6 +7,7 @@ Advanced regression methods with an sklearn-like interface.
 - `Linear`:
   - Configurable regularization: Ridge with given `alpha` / BayesianRidge / ARD
   - "Better bias" option to properly regularize the intercept term
+- `AdaptiveLinear`: Ridge regression with automatic shrinkage of features (like `ARDRegression`, but works in a different way and works better with correlated features)
 - `Scaler`:
   - Configurable preprocessing: Standard scaling (by second moment) / Quantile transformation with uniform/normal output / Power transformation
   - `AutoScaler` to automatically select the best scaling method based on validation split

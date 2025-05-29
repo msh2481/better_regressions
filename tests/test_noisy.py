@@ -26,9 +26,11 @@ def test_same_noise_level():
         # "AdaptiveRidge(pca, 1e-18)": AdaptiveLinear(method="pca", alpha=1e-9),
         # "AdaptiveRidge(pls, 1e-18)": AdaptiveLinear(method="pls", alpha=1e-9),
         "AdaptiveRidge(pca, 1)": AdaptiveLinear(method="pca"),
-        "AdaptiveRidge(pls, 1)": AdaptiveLinear(method="pls"),
+        "AdaptiveRidge(none, 1)": AdaptiveLinear(method="none"),
+        "AdaptiveRidge(auto, 1)": AdaptiveLinear(method="auto"),
         "AdaptiveRidge(pca, bayes)": AdaptiveLinear(method="pca", alpha="bayes"),
-        "AdaptiveRidge(pls, bayes)": AdaptiveLinear(method="pls", alpha="bayes"),
+        "AdaptiveRidge(none, bayes)": AdaptiveLinear(method="none", alpha="bayes"),
+        "AdaptiveRidge(auto, bayes)": AdaptiveLinear(method="auto", alpha="bayes"),
     }
 
     print(f"True features: {d}")
@@ -89,13 +91,13 @@ def test_diverse_noise_levels():
         for level in levels[:k]:
             noise_scales.append(level * np.ones(N))
         noise_scale = np.stack(noise_scales, axis=1)
-        for _ in range(10):
+        for _ in range(100):
             g = np.random.uniform(-1e6, 1e6, N)
             X = g[:, None] + noise_scale * np.random.randn(N, k)
             y = g
             X_train = X[: len(X) // 20]
             y_train = y[: len(y) // 20]
-            # y_train += np.random.randn(len(y_train))
+            y_train += 20 * np.random.randn(len(y_train))
             X_test = X[len(X) // 20 :]
             y_test = y[len(y) // 20 :]
             model = model_fn()
@@ -113,15 +115,14 @@ def test_diverse_noise_levels():
 
     models = {
         "Linear": lambda: Scaler(Linear(alpha=1e-18, better_bias=False), x_method="standard", y_method="standard"),
-        # "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
+        "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
         # "Linear(ARD)": lambda: Scaler(Linear(alpha="ard", better_bias=False), x_method="standard", y_method="standard"),
         # "Linear(ARD')": lambda: Scaler(Linear(alpha="ard"), x_method="standard", y_method="standard"),
-        # "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
-        # "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
+        "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
+        "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
         "AdaptiveRidge(none, 1)": lambda: AdaptiveLinear(method="none"),
-        # "AdaptiveRidge(auto, 1)": lambda: AdaptiveLinear(method="auto"),
-        # "AdaptiveRidge(pca, bayes)": lambda: AdaptiveLinear(method="pca", alpha="bayes"),
-        # "AdaptiveRidge(pls, bayes)": lambda: AdaptiveLinear(method="pls", alpha="bayes"),
+        "AdaptiveRidge(auto, 1)": lambda: AdaptiveLinear(method="auto"),
+        "AdaptiveRidge(auto, bayes)": lambda: AdaptiveLinear(method="auto", alpha="bayes"),
     }
 
     from rich.console import Console
@@ -209,6 +210,6 @@ def test_sparse():
 
 
 if __name__ == "__main__":
-    # test_same_noise_level()
-    test_diverse_noise_levels()
+    test_same_noise_level()
+    # test_diverse_noise_levels()
     # test_sparse()
