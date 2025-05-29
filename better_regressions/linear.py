@@ -79,7 +79,8 @@ class Shrinker(BaseEstimator, RegressorMixin):
 
         sigma = (y - X @ coef).std() + 1e-10
         scale = np.abs(coef / sigma)[None, :]
-        scale = np.ones_like(scale)  # TODO: remove this
+        scale /= scale.max() * 1e5
+        logger.warning(f"scale = {scale}")
         X_scaled = X * scale
 
         if self.alpha == "bayes":
