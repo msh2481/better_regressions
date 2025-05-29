@@ -4,7 +4,7 @@ import numpy as np
 from beartype import beartype as typed
 from jaxtyping import Float
 from numpy import ndarray as ND
-from sklearn.base import BaseEstimator, clone, RegressorMixin
+from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import PowerTransformer, QuantileTransformer, StandardScaler
@@ -70,7 +70,7 @@ class SecondMomentScaler(BaseEstimator, RegressorMixin):
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y=None) -> "SecondMomentScaler":
-        self.scale_ = np.sqrt(np.mean(X**2, axis=0) + 1e-18)
+        self.scale_ = np.sqrt(np.mean(X**2, axis=0) + 1e-30)
         return self
 
     @typed

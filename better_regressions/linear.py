@@ -10,6 +10,8 @@ from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import FunctionTransformer
 
 from better_regressions.classifier import AutoClassifier
 from better_regressions.scaling import Scaler
@@ -55,29 +57,29 @@ $ s = beta / sigma $
 
 
 class Shrinker(BaseEstimator, RegressorMixin):
-    def __init__(self, alpha: Literal["bayes", "ard"] | float = "bayes", fit_intercept: bool = True):
+    def __init__(self, alpha: Literal["bayes", "ard"] | float = "bayes"):
         super().__init__()
         self.alpha = alpha
-        self.fit_intercept = fit_intercept
 
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Shrinker":
         n, d = X.shape
-        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-6:
+        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-3 * n:
             logger.error("X^T X should be n * I")
-        if np.abs((y**2).mean() - d) > 1e-6:
+        if np.abs((y**2).mean() - d) > 1e-3 * d:
             logger.error(f"mean y**2 should be d={d}, instead got {(y**2).mean()}")
+        if np.abs(X.mean(axis=0)).max() > 1e-6:
+            logger.error("X should be centered")
+        X = np.hstack([X, np.ones((n, 1))])
+        d += 1
+        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-3 * n:
+            logger.error("X^T X should be n * I with intercept")
 
-        if self.fit_intercept:
-            if np.abs(X.mean(axis=0)).max() > 1e-6:
-                logger.error("X should be centered")
-            X = np.hstack([X, np.ones((n, 1))])
-            d += 1
-            if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-6:
-                logger.error("X^T X should be n * I with intercept")
+        # OLS coef
+        coef = np.linalg.solve(X.T @ X + 1e-9 * np.eye(d), X.T @ y)
 
-        beta_ols = np.linalg.solve(X.T @ X + 1e-9 * np.eye(d), X.T @ y)
-        sigma = (y - X @ beta_ols).std() + 1e-10
-        scale = np.abs(beta_ols / sigma)[None, :]
+        sigma = (y - X @ coef).std() + 1e-10
+        scale = np.abs(coef / sigma)[None, :]
+        scale = np.ones_like(scale)  # TODO: remove this
         X_scaled = X * scale
 
         if self.alpha == "bayes":
@@ -92,12 +94,8 @@ class Shrinker(BaseEstimator, RegressorMixin):
             coef = np.linalg.solve(X_scaled.T @ X_scaled + self.alpha * np.eye(d), X_scaled.T @ y)
             coef = coef.ravel() * scale.ravel()
 
-        if self.fit_intercept:
-            self.coef_ = coef[:-1]
-            self.intercept_ = coef[-1]
-        else:
-            self.coef_ = coef
-            self.intercept_ = 0
+        self.coef_ = coef[:-1]
+        self.intercept_ = coef[-1]
         return self
 
     @typed
@@ -111,44 +109,40 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
     @typed
     def __init__(
         self,
-        method: Literal["pls", "pca"] = "pls",
-        alpha: Literal["bayes", "ard"] | float = 1.0,
-        fit_intercept: bool = True,
+        method: Literal["pls", "pca"] = "pca",
+        alpha: Literal["bayes", "ard"] | float = "bayes",
     ):
         super().__init__()
-        if not isinstance(alpha, float) or (abs(alpha - 1) > 1e-6):
-            logger.warning(f"alpha=1 is theoretically optimal, but you are using alpha={alpha}")
         self.method = method
         self.alpha = alpha
-        self.fit_intercept = fit_intercept
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveLinear":
         n_samples, n_features = X.shape
         n_components = min(n_samples - 1, n_features)
 
-        ortho = PCA(n_components=n_components) if self.method == "pca" else PLSRegression(n_components=n_components)
+        if self.method == "pca":
+            ortho = PCA(n_components=n_components, whiten=True)
+        else:
+            ortho = PLSRegression(n_components=n_components, scale=True)
         ortho.fit(X, y)
         X_ortho = ortho.transform(X)
-        if self.fit_intercept:
-            X_ortho -= X_ortho.mean(axis=0, keepdims=True)
+        X_ortho -= X_ortho.mean(axis=0, keepdims=True)
 
         solver = Scaler(
-            Shrinker(
-                alpha=self.alpha,
-                fit_intercept=self.fit_intercept,
-            ),
+            Shrinker(alpha=self.alpha),
             x_method="standard",
             y_method="standard",
             use_feature_variance=True,
         )
         solver.fit(X_ortho, y)
+
         # I don't want to properly combine them all analytically, so just one more linear fit
         inputs = np.eye(n_features)
         inputs = np.vstack([inputs, np.zeros((1, n_features))])
         outputs = solver.predict(ortho.transform(inputs))
         # Now just fit linear regression to this input-output mapping
-        helper_ridge = Ridge(alpha=1e-18)
+        helper_ridge = Ridge(alpha=1e-9)
         helper_ridge.fit(inputs, outputs)
         self.coef_ = helper_ridge.coef_
         self.intercept_ = helper_ridge.intercept_
@@ -317,15 +311,21 @@ def test_adaptive():
     # plt.plot(x, p)
     # plt.show()
 
-    n, d = 100, 4
+    n, d = 10, 4
+    np.random.seed(0)
     X = np.random.randn(n, d)
+    X[:, 0] = X[:, 1] + X[:, 2] + X[:, 3] + 1e-1 * np.random.randn(n)
     beta = np.random.randn(d)
-    y = X @ beta + np.random.randn(n)
-    model = AdaptiveLinear(method="pca", alpha=1.0)
+    y = X @ beta + 0.1 * np.random.randn(n)
+    model = AdaptiveLinear(method="pls", alpha=1.0)
     model.fit(X, y)
+    print(beta)
     print(model.coef_)
     print(model.intercept_)
-    print(beta)
+    beta_ols = np.linalg.solve(X.T @ X, X.T @ y)
+    print(beta_ols)
+
+    y_hat = model.predict(X)
 
 
 if __name__ == "__main__":
