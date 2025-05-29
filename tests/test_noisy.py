@@ -177,8 +177,8 @@ def test_sparse():
     models = {
         "Linear": lambda: Scaler(Linear(alpha=1e-18, better_bias=False), x_method="standard", y_method="standard"),
         # "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
-        # "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
-        "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
+        "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
+        # "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
         # "AdaptiveRidge(pca, bayes)": lambda: AdaptiveLinear(method="pca", alpha="bayes"),
         # "AdaptiveRidge(pls, bayes)": lambda: AdaptiveLinear(method="pls", alpha="bayes"),
     }

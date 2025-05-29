@@ -63,24 +63,25 @@ class Shrinker(BaseEstimator, RegressorMixin):
 
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Shrinker":
         n, d = X.shape
-        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-3 * n:
-            logger.error("X^T X should be n * I")
-        if np.abs((y**2).mean() - d) > 1e-3 * d:
+        # if np.abs(X.T @ X / n - np.eye(d)).max() > 1e-2:
+        #     logger.error("X^T X should be n * I")
+        if np.abs((y**2).mean() / d - 1) > 1e-3:
             logger.error(f"mean y**2 should be d={d}, instead got {(y**2).mean()}")
         if np.abs(X.mean(axis=0)).max() > 1e-6:
             logger.error("X should be centered")
         X = np.hstack([X, np.ones((n, 1))])
         d += 1
-        if np.abs(X.T @ X - n * np.eye(d)).max() > 1e-3 * n:
+        if np.abs(X.T @ X / n - np.eye(d)).max() > 1e-3:
             logger.error("X^T X should be n * I with intercept")
 
-        # OLS coef
-        coef = np.linalg.solve(X.T @ X + 1e-9 * np.eye(d), X.T @ y)
+        # OLS coef (assuming X^T X = n * I)
+        coef = X.T @ y / n
 
         sigma = (y - X @ coef).std() + 1e-10
         scale = np.abs(coef / sigma)[None, :]
-        scale /= scale.max() * 1e5
-        logger.warning(f"scale = {scale}")
+        # scale = np.sqrt(np.maximum(scale**2 - 1 / n, 0))
+        # logger.warning(f"scale = {scale}")
+        scale = np.ones_like(scale)
         X_scaled = X * scale
 
         if self.alpha == "bayes":
@@ -126,9 +127,11 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
             ortho = PCA(n_components=n_components, whiten=True)
         else:
             ortho = PLSRegression(n_components=n_components, scale=True)
+        ortho = FunctionTransformer()
         ortho.fit(X, y)
         X_ortho = ortho.transform(X)
-        X_ortho -= X_ortho.mean(axis=0, keepdims=True)
+        ortho_mean = X_ortho.mean(axis=0, keepdims=True)
+        X_ortho -= ortho_mean
 
         solver = Scaler(
             Shrinker(alpha=self.alpha),
@@ -141,7 +144,7 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
         # I don't want to properly combine them all analytically, so just one more linear fit
         inputs = np.eye(n_features)
         inputs = np.vstack([inputs, np.zeros((1, n_features))])
-        outputs = solver.predict(ortho.transform(inputs))
+        outputs = solver.predict(ortho.transform(inputs) - ortho_mean)
         # Now just fit linear regression to this input-output mapping
         helper_ridge = Ridge(alpha=1e-9)
         helper_ridge.fit(inputs, outputs)
