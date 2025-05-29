@@ -57,9 +57,10 @@ $ s = beta / sigma $
 
 
 class Shrinker(BaseEstimator, RegressorMixin):
-    def __init__(self, alpha: Literal["bayes", "ard"] | float = "bayes"):
+    def __init__(self, alpha: Literal["bayes", "ard"] | float = "bayes", hard: bool = False):
         super().__init__()
         self.alpha = alpha
+        self.hard = hard
 
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "Shrinker":
         n, d = X.shape
@@ -71,17 +72,16 @@ class Shrinker(BaseEstimator, RegressorMixin):
             logger.error("X should be centered")
         X = np.hstack([X, np.ones((n, 1))])
         d += 1
-        if np.abs(X.T @ X / n - np.eye(d)).max() > 1e-3:
-            logger.error("X^T X should be n * I with intercept")
+        # if np.abs(X.T @ X / n - np.eye(d)).max() > 1e-3:
+        #     logger.error("X^T X should be n * I with intercept")
 
         # OLS coef (assuming X^T X = n * I)
         coef = X.T @ y / n
 
         sigma = (y - X @ coef).std() + 1e-10
         scale = np.abs(coef / sigma)[None, :]
-        # scale = np.sqrt(np.maximum(scale**2 - 1 / n, 0))
-        # logger.warning(f"scale = {scale}")
-        scale = np.ones_like(scale)
+        if self.hard:
+            scale = np.sqrt(np.maximum(scale**2 - 1 / n, 0))
         X_scaled = X * scale
 
         if self.alpha == "bayes":
@@ -113,10 +113,12 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
         self,
         method: Literal["pls", "pca"] = "pca",
         alpha: Literal["bayes", "ard"] | float = "bayes",
+        hard: bool = False,
     ):
         super().__init__()
         self.method = method
         self.alpha = alpha
+        self.hard = hard
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"]) -> "AdaptiveLinear":
@@ -134,7 +136,7 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
         X_ortho -= ortho_mean
 
         solver = Scaler(
-            Shrinker(alpha=self.alpha),
+            Shrinker(alpha=self.alpha, hard=self.hard),
             x_method="standard",
             y_method="standard",
             use_feature_variance=True,
