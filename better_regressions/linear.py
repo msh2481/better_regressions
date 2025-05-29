@@ -11,6 +11,7 @@ from sklearn.cross_decomposition import PLSRegression
 from sklearn.decomposition import PCA
 from sklearn.linear_model import ARDRegression, BayesianRidge, LogisticRegression, Ridge
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import FunctionTransformer
 
 from better_regressions.classifier import AutoClassifier
@@ -75,8 +76,8 @@ class Shrinker(BaseEstimator, RegressorMixin):
         # if np.abs(X.T @ X / n - np.eye(d)).max() > 1e-3:
         #     logger.error("X^T X should be n * I with intercept")
 
-        # OLS coef (assuming X^T X = n * I)
-        coef = X.T @ y / n
+        # OLS coef
+        coef = np.linalg.solve(X.T @ X + 1e-9 * np.eye(d), X.T @ y)
 
         sigma = (y - X @ coef).std() + 1e-10
         scale = np.abs(coef / sigma)[None, :]
@@ -111,7 +112,7 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
     @typed
     def __init__(
         self,
-        method: Literal["pls", "pca"] = "pca",
+        method: Literal["pls", "pca", "none", "auto"] = "pca",
         alpha: Literal["bayes", "ard"] | float = "bayes",
         hard: bool = False,
     ):
@@ -125,11 +126,29 @@ class AdaptiveLinear(RegressorMixin, BaseEstimator):
         n_samples, n_features = X.shape
         n_components = min(n_samples - 1, n_features)
 
+        if self.method == "auto":
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5)
+            pca = AdaptiveLinear(method="pca", alpha=self.alpha, hard=self.hard)
+            pls = AdaptiveLinear(method="pls", alpha=self.alpha, hard=self.hard)
+            none = AdaptiveLinear(method="none", alpha=self.alpha, hard=self.hard)
+            pca.fit(X_train, y_train)
+            pls.fit(X_train, y_train)
+            none.fit(X_train, y_train)
+            mses = [
+                mean_squared_error(y_test, pca.predict(X_test)),
+                mean_squared_error(y_test, pls.predict(X_test)),
+                mean_squared_error(y_test, none.predict(X_test)),
+            ]
+            self.method = ["pca", "pls", "none"][np.argmin(mses)]
+
         if self.method == "pca":
             ortho = PCA(n_components=n_components, whiten=True)
-        else:
+        elif self.method == "pls":
             ortho = PLSRegression(n_components=n_components, scale=True)
-        ortho = FunctionTransformer()
+        elif self.method == "none":
+            ortho = FunctionTransformer()
+        else:
+            raise ValueError(f"Invalid method: {self.method}")
         ortho.fit(X, y)
         X_ortho = ortho.transform(X)
         ortho_mean = X_ortho.mean(axis=0, keepdims=True)

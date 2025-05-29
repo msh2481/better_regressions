@@ -81,7 +81,7 @@ def test_diverse_noise_levels():
     np.random.seed(42)
     N = 1000
     levels = np.arange(1, 11)
-    ks = [1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10]
+    ks = [1, 1, 2, 2, 4, 4, 6, 6, 8, 8]
 
     def test_model(model_name, model_fn, k):
         results = []
@@ -89,7 +89,7 @@ def test_diverse_noise_levels():
         for level in levels[:k]:
             noise_scales.append(level * np.ones(N))
         noise_scale = np.stack(noise_scales, axis=1)
-        for _ in range(1):
+        for _ in range(10):
             g = np.random.uniform(-1e6, 1e6, N)
             X = g[:, None] + noise_scale * np.random.randn(N, k)
             y = g
@@ -113,12 +113,14 @@ def test_diverse_noise_levels():
 
     models = {
         "Linear": lambda: Scaler(Linear(alpha=1e-18, better_bias=False), x_method="standard", y_method="standard"),
-        "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
+        # "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
         # "Linear(ARD)": lambda: Scaler(Linear(alpha="ard", better_bias=False), x_method="standard", y_method="standard"),
         # "Linear(ARD')": lambda: Scaler(Linear(alpha="ard"), x_method="standard", y_method="standard"),
-        "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
+        # "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
         # "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
-        "AdaptiveRidge(pca, bayes)": lambda: AdaptiveLinear(method="pca", alpha="bayes"),
+        "AdaptiveRidge(none, 1)": lambda: AdaptiveLinear(method="none"),
+        # "AdaptiveRidge(auto, 1)": lambda: AdaptiveLinear(method="auto"),
+        # "AdaptiveRidge(pca, bayes)": lambda: AdaptiveLinear(method="pca", alpha="bayes"),
         # "AdaptiveRidge(pls, bayes)": lambda: AdaptiveLinear(method="pls", alpha="bayes"),
     }
 
@@ -136,7 +138,7 @@ def test_diverse_noise_levels():
         mse_results = []
         for k in ks:
             mse, std = test_model(name, model, k)
-            mse_results.append(f"{mse:.4f} ± {std:.4f}")
+            mse_results.append(f"{mse:.3f} ± {std:.3f}")
         table.add_row(name, *mse_results)
 
     console.print(table)
@@ -156,7 +158,7 @@ def test_sparse():
             eps = np.random.randn(N) * 0.1
             y = X @ w + eps
             X_train = X[:N_train]
-            y_train = y[:N_train] + np.random.randn(N_train)
+            y_train = y[:N_train] + 10 * np.random.randn(N_train)
             X_test = X[N_train:]
             y_test = y[N_train:]
             model = model_fn()
@@ -177,8 +179,10 @@ def test_sparse():
     models = {
         "Linear": lambda: Scaler(Linear(alpha=1e-18, better_bias=False), x_method="standard", y_method="standard"),
         # "Linear'": lambda: Scaler(Linear(alpha=1e-18), x_method="standard", y_method="standard"),
-        "AdaptiveRidge(pca, 1, hard)": lambda: AdaptiveLinear(method="pca", hard=True),
-        "AdaptiveRidge(pca, 1, soft)": lambda: AdaptiveLinear(method="pca", hard=False),
+        "AdaptiveRidge(pca, 1)": lambda: AdaptiveLinear(method="pca"),
+        "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
+        "AdaptiveRidge(none, 1)": lambda: AdaptiveLinear(method="none"),
+        "AdaptiveRidge(auto, 1)": lambda: AdaptiveLinear(method="auto"),
         # "AdaptiveRidge(pls, 1)": lambda: AdaptiveLinear(method="pls"),
         # "AdaptiveRidge(pca, bayes)": lambda: AdaptiveLinear(method="pca", alpha="bayes"),
         # "AdaptiveRidge(pls, bayes)": lambda: AdaptiveLinear(method="pls", alpha="bayes"),
@@ -206,5 +210,5 @@ def test_sparse():
 
 if __name__ == "__main__":
     # test_same_noise_level()
-    # test_diverse_noise_levels()
-    test_sparse()
+    test_diverse_noise_levels()
+    # test_sparse()
