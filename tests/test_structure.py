@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from better_regressions.structure import entropy, entropy1, entropy2, mi_quantile
+from better_regressions.structure import sk_mi as mi_knn
+
 
 def generate_synthetic_data(n_samples=5000, random_state=42):
     """
@@ -93,3 +96,26 @@ def generate_synthetic_data(n_samples=5000, random_state=42):
     feature_cols = [col for col in df.columns if not col.startswith("_") and col != "target"]
     hidden_cols = [col for col in df.columns if col.startswith("_")]
     df = df[feature_cols + ["target"] + hidden_cols]
+    return df
+
+
+def test_mi_simple():
+    data = generate_synthetic_data(n_samples=100000)
+    print(data.head())
+    data = data.to_numpy()[:, :6]
+    n, d = data.shape
+
+    for i in range(d):
+        series = data[:, i]
+        print(f"series {i}: mean {series.mean():.2f}, std {series.std():.2f}")
+        print("H =", entropy(data[:, i : i + 1]))
+        print("H1 =", entropy1(series))
+        print("H1_4 =", entropy1(series, q=4))
+        print("H2 =", entropy2(series, series))
+        print("I =", mi_quantile(series, series))
+        print("I_knn =", mi_knn(series, series))
+        print()
+
+
+if __name__ == "__main__":
+    test_mi_simple()
