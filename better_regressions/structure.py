@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
-from beartype.typing import Literal
+from beartype.typing import Literal, Self
 from jaxtyping import Float
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
@@ -41,13 +41,41 @@ def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
 
 
 class MITree:
-    mi: float
-    left: "MITree" | None = None
-    right: "MITree" | None = None
+    mi_target: float
+    mi_join: float | None = None
+    left: Self | None = None
+    right: Self | None = None
     name: str | None = None
 
+    def __init__(self, mi_target: float, name: str | None = None, mi_join: float | None = None, left: Self | None = None, right: Self | None = None):
+        self.mi_target = mi_target
+        self.name = name
+        self.mi_join = mi_join
+        self.left = left
+        self.right = right
+
     def __str__(self) -> str:
-        pass
+        if not self.left and not self.right:
+            lines = [
+                f"---(name: {self.name})",
+                f"   (target: {self.mi_target:.3f})",
+            ]
+            return "\n".join(lines)
+
+        left_lines = str(self.left).splitlines()
+        left_lines.append("")
+        right_lines = str(self.right).splitlines()
+        stats = [
+            f"---(target: {self.mi_target:.3f})",
+            f"     (join: {self.mi_join:.3f})" if self.mi_join is not None else "join: None",
+        ]
+        stats.extend(["|" for _ in range(len(left_lines) - 2)])
+        stats.extend(["" for _ in range(len(right_lines))])
+        stats_width = max(len(line) for line in stats)
+        stats = [line.rjust(stats_width) for line in stats]
+        assert len(stats) == len(left_lines) + len(right_lines)
+        result_lines = [x + y for x, y in zip(stats, left_lines + right_lines)]
+        return "\n".join(result_lines)
 
 
 @typed
@@ -76,7 +104,7 @@ def build_mi_tree(x: Float[ND, "n k"], y: Float[ND, "n"], q: int = 8, names: lis
         names = [f"x{i}" for i in range(k)]
     trees = [
         MITree(
-            mi=mi_quantile(x[:, i], y, q),
+            mi_target=mi_quantile(x[:, i], y, q),
             name=names[i],
         )
         for i in range(k)
@@ -89,7 +117,14 @@ def build_mi_tree(x: Float[ND, "n k"], y: Float[ND, "n"], q: int = 8, names: lis
         k = x.shape[1]
 
         assert len(trees) == k
-        trees.append(MITree(mi=mi_quantile(merged, y, q), left=trees[merge_i], right=trees[merge_j]))
+        trees.append(
+            MITree(
+                mi_target=mi_quantile(merged, y, q),
+                mi_join=MIs[(merge_i, merge_j)],
+                left=trees[merge_i],
+                right=trees[merge_j],
+            )
+        )
 
         active.remove(merge_i)
         active.remove(merge_j)
@@ -119,5 +154,14 @@ def test_entropy():
     plt.show()
 
 
+def test_mi_tree():
+    a = MITree(mi_target=0.5, name="a")
+    b = MITree(mi_target=0.3, name="b")
+    c = MITree(mi_target=0.2, name="c")
+    x = MITree(mi_target=0.6, mi_join=0.8, name="x", left=a, right=b)
+    y = MITree(mi_target=0.9345, mi_join=0.1245, left=x, right=c)
+    print(y)
+
+
 if __name__ == "__main__":
-    test_entropy()
+    test_mi_tree()

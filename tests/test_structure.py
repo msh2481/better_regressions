@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from better_regressions.structure import entropy, joint_entropy_quantile
+from better_regressions.structure import joint_entropy_quantile
 from better_regressions.structure import mi_knn as mi_knn
 from better_regressions.structure import mi_quantile
 
