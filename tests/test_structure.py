@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from better_regressions.structure import entropy, entropy1, entropy2, mi_quantile
-from better_regressions.structure import sk_mi as mi_knn
+from better_regressions.structure import entropy, joint_entropy_quantile
+from better_regressions.structure import mi_knn as mi_knn
+from better_regressions.structure import mi_quantile
 
 
 def generate_synthetic_data(n_samples=5000, random_state=42):
@@ -105,16 +106,16 @@ def test_mi_simple():
     data = data.to_numpy()[:, :6]
     n, d = data.shape
 
+    mi_knns = np.zeros((d, d))
+    mi_quantiles = np.zeros((d, d))
     for i in range(d):
-        series = data[:, i]
-        print(f"series {i}: mean {series.mean():.2f}, std {series.std():.2f}")
-        print("H =", entropy(data[:, i : i + 1]))
-        print("H1 =", entropy1(series))
-        print("H1_4 =", entropy1(series, q=4))
-        print("H2 =", entropy2(series, series))
-        print("I =", mi_quantile(series, series))
-        print("I_knn =", mi_knn(series, series))
-        print()
+        for j in range(i + 1, d):
+            # mi_knns[i, j] = mi_knn(data[:, i], data[:, j])
+            mi_quantiles[i, j] = mi_quantile(data[:, i], data[:, j])
+
+    np.set_printoptions(formatter={"float": lambda x: f"{x:.3f}"})
+    print(mi_knns)
+    print(mi_quantiles)
 
 
 if __name__ == "__main__":

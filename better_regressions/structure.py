@@ -1,97 +1,122 @@
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
+from beartype.typing import Literal
 from jaxtyping import Float
+from matplotlib import pyplot as plt
 from numpy import ndarray as ND
 from scipy import stats
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.metrics import mutual_info_score
+from sklearn.model_selection import cross_val_predict
 
-from better_regressions.entropy_estimators import entropy, mi
+from better_regressions import Linear, Scaler, binning_regressor
 
 
 @typed
-def sk_mi(x: Float[ND, "n"], y: Float[ND, "n"]) -> float:
+def mi_knn(x: Float[ND, "n"], y: Float[ND, "n"]) -> float:
     result = mutual_info_regression(x.reshape(-1, 1), y, n_neighbors=3)
     assert result.shape == (1,)
     return float(result[0])
 
 
 @typed
-def entropy1(x: Float[ND, "n"], q: int = 10) -> float:
-    x_clipped = np.clip(x, np.percentile(x, 1), np.percentile(x, 99))
-    boundaries = np.quantile(x_clipped, np.linspace(0, 1, q + 1))
-    counts = np.histogram(x_clipped, bins=boundaries)[0].astype(float)
-
-    probabilities = counts / np.sum(counts)
-    segment_widths = np.diff(boundaries)
-    return -np.sum(probabilities * np.log2(probabilities / segment_widths + 1e-12))
-
-
-@typed
-def entropy2(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 4) -> float:
-    x_clipped = np.clip(x, np.percentile(x, 1), np.percentile(x, 99))
-    y_clipped = np.clip(y, np.percentile(y, 1), np.percentile(y, 99))
-
-    x_boundaries = np.quantile(x_clipped, np.linspace(0, 1, q + 1))
-    y_boundaries = np.quantile(y_clipped, np.linspace(0, 1, q + 1))
-
-    counts, _, _ = np.histogram2d(x_clipped, y_clipped, bins=[x_boundaries, y_boundaries])
+def joint_entropy_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
+    x = np.argsort(np.argsort(x)) / len(x)
+    y = np.argsort(np.argsort(y)) / len(y)
+    counts, _, _ = np.histogram2d(x, y, bins=q)
     probabilities = counts.flatten() / np.sum(counts)
-
-    x_widths = np.diff(x_boundaries)
-    y_widths = np.diff(y_boundaries)
-    segment_areas = np.outer(x_widths, y_widths).flatten()
-
-    return -np.sum(probabilities * np.log2(probabilities / segment_areas + 1e-12))
+    return -np.sum(probabilities * np.log2(probabilities + 1e-12))
 
 
 @typed
-def entropy3(x: Float[ND, "n"], y: Float[ND, "n"], z: Float[ND, "n"], q: int = 4) -> float:
-    x_clipped = np.clip(x, np.percentile(x, 1), np.percentile(x, 99))
-    y_clipped = np.clip(y, np.percentile(y, 1), np.percentile(y, 99))
-    z_clipped = np.clip(z, np.percentile(z, 1), np.percentile(z, 99))
+def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
+    """
+    I(x, y) = H(x) + H(y) - H(x, y)
+    H(x) = H(y) = log(q)
+    log(q) <= I(x, y) <= 2 * log(q)
+    """
+    logq = np.log2(q)
+    mi = np.clip((2 * logq - joint_entropy_quantile(x, y, q)) / logq, 0, 1)
+    return mi
 
-    x_boundaries = np.quantile(x_clipped, np.linspace(0, 1, q + 1))
-    y_boundaries = np.quantile(y_clipped, np.linspace(0, 1, q + 1))
-    z_boundaries = np.quantile(z_clipped, np.linspace(0, 1, q + 1))
 
-    counts, _ = np.histogramdd([x_clipped, y_clipped, z_clipped], bins=[x_boundaries, y_boundaries, z_boundaries])
-    probabilities = counts.flatten() / np.sum(counts)
+class MITree:
+    mi: float
+    left: "MITree" | None = None
+    right: "MITree" | None = None
+    name: str | None = None
 
-    x_widths = np.diff(x_boundaries)
-    y_widths = np.diff(y_boundaries)
-    z_widths = np.diff(z_boundaries)
-
-    segment_volumes = np.zeros((q, q, q))
-    for i in range(q):
-        for j in range(q):
-            for k in range(q):
-                segment_volumes[i, j, k] = x_widths[i] * y_widths[j] * z_widths[k]
-    segment_volumes = segment_volumes.flatten()
-
-    return -np.sum(probabilities * np.log2(probabilities / segment_volumes + 1e-12))
+    def __str__(self) -> str:
+        pass
 
 
 @typed
-def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 4) -> float:
-    """I(x, y) = H(x) + H(y) - H(x, y)"""
-    return entropy1(x, q) + entropy1(y, q) - entropy2(x, y, q)
+def build_mi_tree(x: Float[ND, "n k"], y: Float[ND, "n"], q: int = 8, names: list[str] | None = None) -> MITree:
+    def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
+        linear_model = Scaler(Linear())
+        binning_model = binning_regressor(X_bins=q, y_bins=q)
+        X = np.hstack([xi, xj])
+        linear_predictions = cross_val_predict(linear_model, X, y, cv=3, n_jobs=3)
+        binning_predictions = cross_val_predict(binning_model, X, y, cv=3, n_jobs=3)
+        linear_spearman = stats.spearmanr(linear_predictions, y)[0]
+        binning_spearman = stats.spearmanr(binning_predictions, y)[0]
+        if linear_spearman > binning_spearman:
+            return linear_predictions
+        else:
+            return binning_predictions
 
+    n, k = x.shape
+    MIs: dict[tuple[int, int], float] = {}
+    for merge_i in range(k):
+        for merge_j in range(merge_i + 1, k):
+            mi = mi_quantile(x[:, merge_i], x[:, merge_j], q)
+            MIs[(merge_i, merge_j)] = mi
+    active = set(range(k))
+    if names is None:
+        names = [f"x{i}" for i in range(k)]
+    trees = [
+        MITree(
+            mi=mi_quantile(x[:, i], y, q),
+            name=names[i],
+        )
+        for i in range(k)
+    ]
+    while len(active) > 1:
+        to_sort = [(mi, i, j) for (i, j), mi in MIs.items() if i in active and j in active]
+        to_sort.sort(key=lambda x: x[0], reverse=True)
+        merge_i, merge_j = to_sort[0][1:]
+        merged = merge(x[:, merge_i], x[:, merge_j])
+        k = x.shape[1]
 
-@typed
-def cmi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], z: Float[ND, "n"], q: int = 4) -> float:
-    """I(x, y | z) = H(x, z) + H(y, z) - H(z) - H(x, y, z)"""
-    return entropy2(x, z, q) + entropy2(y, z, q) - entropy1(z, q) - entropy3(x, y, z, q)
+        assert len(trees) == k
+        trees.append(MITree(mi=mi_quantile(merged, y, q), left=trees[merge_i], right=trees[merge_j]))
+
+        active.remove(merge_i)
+        active.remove(merge_j)
+        active.add(k)
+
+        x = np.hstack([x, merged[:, None]])
+        MIs.pop((merge_i, merge_j))
+        for i in active:
+            MIs.pop((i, merge_i))
+            MIs.pop((i, merge_j))
+            if i != k:
+                MIs[(i, k)] = mi_quantile(x[:, i], x[:, k], q)
+
+    return trees[-1]
 
 
 def test_entropy():
-    x = np.random.randn(10000)
-    y = np.random.randn(10000)
-    z = np.random.randn(10000)
-    print(f"H(x) = {entropy1(x)}")
-    print(f"I(x, y) = {mi_quantile(x, y)}")
-    print(f"I(x, y | z) = {cmi_quantile(x, y, z)}")
+    corrs = []
+    mis = []
+    for corr in np.linspace(-1, 1, 100):
+        x = np.random.randn(10000)
+        y = x * corr + np.sqrt(1 - np.abs(corr)) * np.random.randn(10000)
+        c = np.corrcoef(x, y)[0, 1]
+        corrs.append(c)
+        mis.append(mi_quantile(x, y))
+    plt.plot(corrs, mis)
+    plt.show()
 
 
 if __name__ == "__main__":
