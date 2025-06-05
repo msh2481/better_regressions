@@ -4,7 +4,7 @@ from scipy import stats
 
 from better_regressions.structure import joint_entropy_quantile
 from better_regressions.structure import mi_knn as mi_knn
-from better_regressions.structure import mi_quantile
+from better_regressions.structure import mi_quantile, show_structure
 
 
 def generate_synthetic_data(n_samples=5000, random_state=42):
@@ -118,5 +118,12 @@ def test_mi_simple():
     print(mi_quantiles)
 
 
+def test_structure():
+    data = generate_synthetic_data(n_samples=10000)
+    X = data.drop(columns=["target"])
+    y = data["target"]
+    show_structure(X, y, "output")
+
+
 if __name__ == "__main__":
-    test_mi_simple()
+    test_structure()
