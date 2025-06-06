@@ -51,3 +51,5 @@ __all__ = [
     "plot_trend_continuous",
     "plot_trend_discrete",
 ]
+
+__version__ = "0.7.0"

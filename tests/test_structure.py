@@ -171,4 +171,4 @@ def very_simple_test_structure():
 
 
 if __name__ == "__main__":
-    simple_test_structure()
+    test_structure()
