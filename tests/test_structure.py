@@ -132,9 +132,9 @@ def test_structure():
         X,
         y,
         "output",
-        do_regional_mi=True,
-        do_structure_matrices=False,
-        do_factor_analysis=False,
+        do_regional_mi=False,
+        do_structure_matrices=True,
+        do_factor_analysis=True,
     )
 
 

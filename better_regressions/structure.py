@@ -370,17 +370,18 @@ def _perform_and_plot_factor_analysis(
     logger.info("Performing factor analysis")
     all_features_numpy = np.hstack([X_numpy, y_numpy.reshape(-1, 1)])
     all_feature_names = list(X.columns) + ["target"]
-    X_scaled = StandardScaler().fit_transform(all_features_numpy)
+    # Convert to quantiles to avoid dependency on marginal distributions
+    X_quantiles = pd.DataFrame(all_features_numpy).rank(pct=True).to_numpy()
     fa_check = FactorAnalyzer(n_factors=k + 1, rotation=None)
     with Silencer():
-        fa_check.fit(X_scaled)
+        fa_check.fit(X_quantiles)
     ev, _ = fa_check.get_eigenvalues()
     n_factors = sum(ev > 1)
     if n_factors == 0:
         n_factors = 1
     fa = FactorAnalyzer(n_factors=n_factors, rotation="quartimin")
     with Silencer():
-        fa.fit(X_scaled)
+        fa.fit(X_quantiles)
     loadings = fa.loadings_
     loadings_df = pd.DataFrame(loadings, index=all_feature_names, columns=[f"Factor {i + 1}" for i in range(n_factors)])
     if leaf_names:
