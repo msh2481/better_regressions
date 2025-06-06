@@ -184,7 +184,7 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
 
 
 @typed
-def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> tuple[MITree, dict[tuple[int, int], float]]:
+def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> MITree:
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
         model = Scaler(Linear(alpha=1e-9))
         X = np.column_stack([xi, xj])
@@ -193,13 +193,12 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
 
     n, k_initial = X.shape
     h_y = entropy_quantile(y, q)
-    MIs_to_return: dict[tuple[int, int], float] = {}
-    for i in range(k_initial):
+    scores: dict[tuple[int, int], float] = {}
+    for i in tqdm(range(k_initial), desc="Computing initial scores"):
         for j in range(i + 1, k_initial):
             mi = mi_quantile(X[:, i], X[:, j], q, norm=True)
-            MIs_to_return[(i, j)] = mi
-
-    MIs = MIs_to_return.copy()
+            pid = pid_quantile(y, X[:, i], X[:, j], q)
+            scores[(i, j)] = mi + pid.synergy
 
     active = set(range(k_initial))
     if names is None:
@@ -212,7 +211,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         for i in range(k_initial)
     ]
     for _ in tqdm(range(k_initial - 1), desc="Building MI tree"):
-        to_sort = [(mi, i, j) for (i, j), mi in MIs.items() if i in active and j in active]
+        to_sort = [(mi, i, j) for (i, j), mi in scores.items() if i in active and j in active]
         to_sort.sort(key=lambda x: x[0], reverse=True)
 
         _, u, v = to_sort[0]
@@ -226,7 +225,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         trees.append(
             MITree(
                 mi_target=mi_quantile(merged, y, q) / h_y,
-                mi_join=MIs[(merge_i, merge_j)],
+                mi_join=mi_quantile(X[:, merge_i], X[:, merge_j], q, norm=True),
                 decomp=pid,
                 left=trees[merge_i],
                 right=trees[merge_j],
@@ -236,14 +235,16 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         active.remove(merge_i)
         active.remove(merge_j)
         X = np.hstack([X, merged[:, None]])
-        MIs.pop((merge_i, merge_j))
+        scores.pop((merge_i, merge_j))
         for i in active:
-            MIs.pop((min(i, merge_i), max(i, merge_i)), None)
-            MIs.pop((min(i, merge_j), max(i, merge_j)), None)
-            MIs[(i, k_new)] = mi_quantile(X[:, i], X[:, k_new], q, norm=True)
+            scores.pop((min(i, merge_i), max(i, merge_i)), None)
+            scores.pop((min(i, merge_j), max(i, merge_j)), None)
+            mi = mi_quantile(X[:, i], X[:, k_new], q, norm=True)
+            pid = pid_quantile(y, X[:, i], X[:, k_new], q)
+            scores[(i, k_new)] = mi + pid.synergy
         active.add(k_new)
 
-    return trees[-1], MIs_to_return
+    return trees[-1]
 
 
 def get_leaf_names(tree: MITree) -> list[str]:
@@ -294,10 +295,11 @@ def _compute_and_plot_copulas_and_regional_mi(X: pd.DataFrame, y_numpy: Float[ND
 
 def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n k"], y_numpy: Float[ND, "n"], output_dir: str, q: int) -> list[str]:
     k = X.shape[1]
-    tree, initial_mis = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
+    tree = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
     MIs = np.zeros((k, k))
-    for (i, j), mi in initial_mis.items():
-        MIs[i, j] = MIs[j, i] = mi
+    for i in range(k):
+        for j in range(i + 1, k):
+            MIs[i, j] = MIs[j, i] = mi_quantile(X_numpy[:, i], X_numpy[:, j], q, norm=True)
     leaf_names = get_leaf_names(tree)
     mi_df = pd.DataFrame(MIs, index=X.columns, columns=X.columns)
     mi_df_ordered = mi_df.loc[leaf_names, leaf_names]

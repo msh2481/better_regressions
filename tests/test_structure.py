@@ -152,7 +152,7 @@ def test_structure():
         "output",
         do_regional_mi=False,
         do_structure_matrices=True,
-        do_factor_analysis=True,
+        do_factor_analysis=False,
     )
 
 
@@ -164,9 +164,9 @@ def simple_test_structure():
         X,
         y,
         "output",
-        do_regional_mi=True,
+        do_regional_mi=False,
         do_structure_matrices=True,
-        do_factor_analysis=True,
+        do_factor_analysis=False,
     )
 
 

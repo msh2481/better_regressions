@@ -15,6 +15,10 @@ class InfoDecomposition:
     mi_a: float
     mi_b: float
 
+    @property
+    def synergy(self) -> float:
+        return max(self.mi_joint - self.mi_linear, 0)
+
 
 class MITree:
     mi_target: float
