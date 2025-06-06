@@ -10,25 +10,24 @@ from beartype.typing import Self
 
 @dataclass
 class InfoDecomposition:
-    redundancy: float
-    unique_a: float
-    unique_b: float
-    synergy: float
-    total: float
+    mi_joint: float
+    mi_additive: float
+    mi_a: float
+    mi_b: float
 
 
 class MITree:
     mi_target: float
     mi_join: float | None = None
-    pid: InfoDecomposition | None = None
+    decomp: InfoDecomposition | None = None
     left: Self | None = None
     right: Self | None = None
     name: str | None = None
 
-    def __init__(self, mi_target: float, name: str | None = None, mi_join: float | None = None, pid: InfoDecomposition | None = None, left: Self | None = None, right: Self | None = None):
+    def __init__(self, mi_target: float, name: str | None = None, mi_join: float | None = None, decomp: InfoDecomposition | None = None, left: Self | None = None, right: Self | None = None):
         self.mi_target = mi_target
         self.name = name
-        self.pid = pid
+        self.decomp = decomp
         self.mi_join = mi_join
         self.left = left
         self.right = right
@@ -46,14 +45,12 @@ class MITree:
         right_lines = str(self.right).splitlines()
         fmt = lambda x: f"{x:.3f}" if x is not None else "None"
         a, b = fmt(self.mi_target), fmt(self.mi_join)
-        c, d = fmt(self.pid.total), fmt(self.pid.redundancy)
-        e, f = fmt(self.pid.unique_a), fmt(self.pid.unique_b)
-        g = fmt(self.pid.synergy)
+        c, d = fmt(self.decomp.mi_joint), fmt(self.decomp.mi_additive)
+        e, f = fmt(self.decomp.mi_a), fmt(self.decomp.mi_b)
         stats = [
-            f"---(target: {a} |       join: {b})",
-            f"    (total: {c} | redundancy: {d})",
-            f" (unique_a: {e} |   unique_b: {f})",
-            f"                    (synergy: {g})",
+            f"---(target: {a} | join: {b})",
+            f"    (total: {c} |  add: {d})",
+            f"        (A: {e} |    B: {f})",
         ]
         stats.extend(["|" for _ in range(len(left_lines) - len(stats))])
         stats.extend(["" for _ in range(len(right_lines))])
@@ -87,20 +84,23 @@ def tree_to_networkx(tree: MITree, node_id: int = 0) -> tuple[nx.DiGraph, dict[i
 
 
 @typed
-def pid_to_color(pid: InfoDecomposition | None, total: float | int) -> str:
-    if pid is None or total < 1e-6:
+def pid_to_color(pid: InfoDecomposition | None) -> str:
+    if pid is None:
         return "rgb(128,128,128)"
 
-    red = int(255 * pid.redundancy / total)
-    blue = int(255 * pid.synergy / total)
-    green = int(255 * (pid.unique_a + pid.unique_b) / total)
+    baseline = max(max(pid.mi_a, pid.mi_b), 0)
+    additive_synergy = max(pid.mi_additive - baseline, 0)
+    joint_synergy = max(pid.mi_joint - pid.mi_additive, 0)
 
-    total_color = red + blue + green
-    if total_color > 0:
-        scale = 255 / total_color
-        red = int(red * scale)
-        blue = int(blue * scale)
-        green = int(green * scale)
+    red = int(255 * baseline)
+    green = int(255 * additive_synergy)
+    blue = int(255 * joint_synergy)
+
+    total_color = red + blue + green + 1
+    scale = 255 / total_color
+    red = int(red * scale)
+    blue = int(blue * scale)
+    green = int(green * scale)
 
     return f"rgb({red},{green},{blue})"
 
@@ -169,7 +169,7 @@ def render_tree_interactive(tree: MITree, output_file: str = "tree.html") -> Non
         node_y.append(y)
 
         tree_node = node_map[node_id]
-        color = pid_to_color(tree_node.pid, tree_node.pid.total if tree_node.pid else 0)
+        color = pid_to_color(tree_node.decomp)
         node_colors.append(color)
 
         if tree_node.name:
@@ -178,12 +178,11 @@ def render_tree_interactive(tree: MITree, output_file: str = "tree.html") -> Non
             node_text.append("")
 
         fmt = lambda x: f"{x:.3f}" if x is not None else "None"
-        if tree_node.pid:
+        if tree_node.decomp:
             mi_target, mi_join = fmt(tree_node.mi_target), fmt(tree_node.mi_join)
-            pid_total, pid_redundancy = fmt(tree_node.pid.total), fmt(tree_node.pid.redundancy)
-            pid_unique_a, pid_unique_b = fmt(tree_node.pid.unique_a), fmt(tree_node.pid.unique_b)
-            pid_synergy = fmt(tree_node.pid.synergy)
-            hover_info = f"Name: {tree_node.name or 'Internal'}<br>" f"Target MI: {mi_target}<br>" f"Join MI: {mi_join}<br>" f"PID Total: {pid_total}<br>" f"Redundancy: {pid_redundancy}<br>" f"Unique A: {pid_unique_a}<br>" f"Unique B: {pid_unique_b}<br>" f"Synergy: {pid_synergy}"
+            mi_joint, mi_additive = fmt(tree_node.decomp.mi_joint), fmt(tree_node.decomp.mi_additive)
+            mi_a, mi_b = fmt(tree_node.decomp.mi_a), fmt(tree_node.decomp.mi_b)
+            hover_info = f"Name: {tree_node.name or 'Internal'}<br>" f"Target MI: {mi_target}<br>" f"Join MI: {mi_join}<br>" f"MI Joint: {mi_joint}<br>" f"MI Additive: {mi_additive}<br>" f"MI A: {mi_a}<br>" f"MI B: {mi_b}"
         else:
             mi_target = fmt(tree_node.mi_target)
             hover_info = f"Name: {tree_node.name or 'Internal'}<br>" f"Target MI: {mi_target}"

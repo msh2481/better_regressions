@@ -2,9 +2,15 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from better_regressions.structure import joint_entropy_quantile
 from better_regressions.structure import mi_knn as mi_knn
 from better_regressions.structure import mi_quantile, show_structure
+
+
+def generate_very_simple_data(n_samples=5000, random_state=42):
+    np.random.seed(random_state)
+    a = np.random.randn(n_samples)
+    b = a + np.random.randn(n_samples)
+    return pd.DataFrame({"a": a, "b": b, "target": a + b})
 
 
 def generate_simple_data(n_samples=5000, random_state=42):
@@ -153,6 +159,20 @@ def test_structure():
 
 def simple_test_structure():
     data = generate_simple_data(n_samples=10000)
+    X = data.drop(columns=["target"])
+    y = data["target"]
+    show_structure(
+        X,
+        y,
+        "output",
+        do_regional_mi=True,
+        do_structure_matrices=True,
+        do_factor_analysis=True,
+    )
+
+
+def very_simple_test_structure():
+    data = generate_very_simple_data(n_samples=10000)
     X = data.drop(columns=["target"])
     y = data["target"]
     show_structure(

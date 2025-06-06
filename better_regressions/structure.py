@@ -201,16 +201,24 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
     h_concat = -np.log2(concat_preds[indices, y_binned]).mean()
     h_outer = -np.log2(outer_preds[indices, y_binned]).mean()
 
-    total = h_y - h_outer  # maximum reduction of entropy we can achieve with (a, b)
+    # np.set_printoptions(formatter={"float_kind": lambda x: f"{x:.2f}"})
+    # print(f"h_y: {h_y}")
+    # print(f"h_only_a: {h_only_a}")
+    # print(f"h_only_b: {h_only_b}")
+    # print(f"h_concat: {h_concat}")
+    # print(f"h_outer: {h_outer}")
+
+    mi_joint = h_y - h_outer  # maximum reduction of entropy we can achieve with (a, b)
+    mi_additive = h_y - h_concat  # maximum reduction of entropy we can achieve, but without synergy effects
     mi_a = h_y - h_only_a  # mutual information between a and y
     mi_b = h_y - h_only_b  # mutual information between b and y
-    wo_synergy = h_y - h_concat  # maximum reduction of entropy we can achieve, but without synergy effects
-    synergy = np.clip(total - wo_synergy, 0, total)
-    redundancy = np.clip(mi_a + mi_b - wo_synergy, 0, min(mi_a, mi_b))  # because wo_synergy = unique a + unique b + redundancy, and mi_a = unique a + redundancy, ...
-    unique_a = mi_a - redundancy
-    unique_b = mi_b - redundancy
 
-    return InfoDecomposition(redundancy=redundancy, unique_a=unique_a, unique_b=unique_b, synergy=synergy, total=total)
+    mi_joint /= h_y
+    mi_additive /= h_y
+    mi_a /= h_y
+    mi_b /= h_y
+
+    return InfoDecomposition(mi_joint=mi_joint, mi_additive=mi_additive, mi_a=mi_a, mi_b=mi_b)
 
 
 @typed
@@ -255,7 +263,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
             MITree(
                 mi_target=mi_quantile(merged, y, q),
                 mi_join=MIs[(merge_i, merge_j)],
-                pid=pid,
+                decomp=pid,
                 left=trees[merge_i],
                 right=trees[merge_j],
             )
@@ -331,8 +339,9 @@ def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n 
     mi_df_ordered = mi_df.loc[leaf_names, leaf_names]
     logger.info("MI matrix computed")
     plt.figure(figsize=(16, 14))
-    mask = mi_df_ordered < 2e-3
-    sns.heatmap(mi_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+    with Silencer():
+        mask = mi_df_ordered < 2e-3
+        sns.heatmap(mi_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("MI Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "mi_matrix.png"))
@@ -343,15 +352,18 @@ def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n 
     for i in tqdm(range(k), desc="Computing PID for matrices"):
         for j in range(i + 1, k):
             pid_result = pid_quantile(y_numpy, X_numpy[:, i], X_numpy[:, j], q)
-            total = max(pid_result.total, 0.05)
-            synergies[i, j] = synergies[j, i] = cut_small(pid_result.synergy) / total
-            redundancies[i, j] = redundancies[j, i] = cut_small(pid_result.redundancy) / total
+            synergy = cut_small(pid_result.mi_joint - pid_result.mi_additive)
+            redundancy = cut_small(pid_result.mi_a + pid_result.mi_b - pid_result.mi_additive)
+            total = max(pid_result.mi_joint, 0.05)
+            synergies[i, j] = synergies[j, i] = synergy / total
+            redundancies[i, j] = redundancies[j, i] = redundancy / total
     synergy_df = pd.DataFrame(synergies, index=X.columns, columns=X.columns)
     synergy_df_ordered = synergy_df.loc[leaf_names, leaf_names]
     logger.info("Synergy matrix computed")
     plt.figure(figsize=(16, 14))
-    mask = synergy_df_ordered < 2e-3
-    sns.heatmap(synergy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+    with Silencer():
+        mask = synergy_df_ordered < 2e-3
+        sns.heatmap(synergy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Synergy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "synergy_matrix.png"))
@@ -360,8 +372,9 @@ def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n 
     redundancy_df_ordered = redundancy_df.loc[leaf_names, leaf_names]
     logger.info("Redundancy matrix computed")
     plt.figure(figsize=(16, 14))
-    mask = redundancy_df_ordered < 2e-3
-    sns.heatmap(redundancy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+    with Silencer():
+        mask = redundancy_df_ordered < 2e-3
+        sns.heatmap(redundancy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Redundancy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "redundancy_matrix.png"))
@@ -429,7 +442,7 @@ def show_structure(
 
 
 def test_pid():
-    N = 10**5
+    N = 10**4
 
     print("1. Independent coins:")
     a = np.random.binomial(
@@ -440,65 +453,60 @@ def test_pid():
     b = np.random.binomial(1, 0.5, N).astype(float)
     y = np.random.binomial(1, 0.5, N).astype(float)
     result = pid_quantile(y, a, b)
-    print(f"   Redundancy: {result.redundancy:.4f}")
-    print(f"   Unique A:   {result.unique_a:.4f}")
-    print(f"   Unique B:   {result.unique_b:.4f}")
-    print(f"   Synergy:    {result.synergy:.4f}")
-    print(f"   Total:      {result.total:.4f}")
+    print(f"   Joint:      {result.mi_joint:.4f}")
+    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   A:          {result.mi_a:.4f}")
+    print(f"   B:          {result.mi_b:.4f}")
     print()
 
-    # print("2. Y = A XOR B (synergy):")
-    # a = np.random.binomial(1, 0.5, N).astype(float)
-    # b = np.random.binomial(1, 0.5, N).astype(float)
-    # y = (a.astype(int) ^ b.astype(int)).astype(float)
-    # result = pid_quantile(y, a, b)
-    # print(f"   Redundancy: {result.redundancy:.4f}")
-    # print(f"   Unique A:   {result.unique_a:.4f}")
-    # print(f"   Unique B:   {result.unique_b:.4f}")
-    # print(f"   Synergy:    {result.synergy:.4f}")
-    # print(f"   Total:      {result.total:.4f}")
-    # print()
+    print("2. Y = A XOR B (synergy):")
+    a = np.random.binomial(1, 0.5, N).astype(float)
+    b = np.random.binomial(1, 0.5, N).astype(float)
+    y = (a.astype(int) ^ b.astype(int)).astype(float)
+    result = pid_quantile(y, a, b)
+    print(f"   Joint:      {result.mi_joint:.4f}")
+    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   A:          {result.mi_a:.4f}")
+    print(f"   B:          {result.mi_b:.4f}")
+    print()
 
-    # print("3. A = Y + noise, B = Y + noise (redundancy):")
-    # y = np.random.binomial(1, 0.5, N).astype(float)
-    # noise_a = np.random.binomial(1, 0.1, N).astype(float)
-    # noise_b = np.random.binomial(1, 0.1, N).astype(float)
-    # a = (y.astype(int) ^ noise_a.astype(int)).astype(float)
-    # b = (y.astype(int) ^ noise_b.astype(int)).astype(float)
-    # result = pid_quantile(y, a, b)
-    # print(f"   Redundancy: {result.redundancy:.4f}")
-    # print(f"   Unique A:   {result.unique_a:.4f}")
-    # print(f"   Unique B:   {result.unique_b:.4f}")
-    # print(f"   Synergy:    {result.synergy:.4f}")
-    # print(f"   Total:      {result.total:.4f}")
-    # print()
+    print("3. A = Y + noise, B = Y + noise (redundancy):")
+    y = np.random.binomial(1, 0.5, N).astype(float)
+    noise_a = np.random.binomial(1, 0.1, N).astype(float)
+    noise_b = np.random.binomial(1, 0.1, N).astype(float)
+    a = (y.astype(int) ^ noise_a.astype(int)).astype(float)
+    b = (y.astype(int) ^ noise_b.astype(int)).astype(float)
+    result = pid_quantile(y, a, b)
+    print(f"   Joint:      {result.mi_joint:.4f}")
+    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   A:          {result.mi_a:.4f}")
+    print(f"   B:          {result.mi_b:.4f}")
+    print()
 
     print("4. Linear relationship:")
     a = np.random.randn(N)
     b = np.random.randn(N)
     y = a + b
     result = pid_quantile(y, a, b)
-    print(f"   Redundancy: {result.redundancy:.4f}")
-    print(f"   Unique A:   {result.unique_a:.4f}")
-    print(f"   Unique B:   {result.unique_b:.4f}")
-    print(f"   Synergy:    {result.synergy:.4f}")
-    print(f"   Total:      {result.total:.4f}")
+    print(f"   Joint:      {result.mi_joint:.4f}")
+    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   A:          {result.mi_a:.4f}")
+    print(f"   B:          {result.mi_b:.4f}")
     print()
 
-    # print("5. Complete separation:")
-    # N = 10**4
-    # a = np.random.randint(0, 2, N)
-    # b = np.random.randint(0, 2, N)
-    # y = 2 * a + b
-    # a = a.astype(float)
-    # b = b.astype(float)
-    # y = y.astype(float)
-    # result = pid_quantile(y, a, b, q=4)
-    # print(f"   Redundancy: {result.redundancy:.4f}")
-    # print(f"   Unique A:   {result.unique_a:.4f}")
-    # print(f"   Unique B:   {result.unique_b:.4f}")
-    # print(f"   Synergy:    {result.synergy:.4f}")
-    # print(f"   Total:      {result.total:.4f}")
+    print("5. Complete separation:")
+    N = 10**4
+    a = np.random.randint(0, 2, N)
+    b = np.random.randint(0, 2, N)
+    y = 2 * a + b
+    a = a.astype(float)
+    b = b.astype(float)
+    y = y.astype(float)
+    result = pid_quantile(y, a, b, q=4)
+    print(f"   Joint:      {result.mi_joint:.4f}")
+    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   A:          {result.mi_a:.4f}")
+    print(f"   B:          {result.mi_b:.4f}")
 
 
 if __name__ == "__main__":
