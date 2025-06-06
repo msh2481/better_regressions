@@ -27,9 +27,8 @@ def generate_simple_data(n_samples=5000, random_state=42):
     e /= e.std()
     f = np.random.randn(n_samples)
     f /= f.std()
-
-    # target = a * b + c * d + e * f + np.tanh(a + f)
-    target = a + b + c + d + e + f
+    target = a * b + c * d + e * f + np.tanh(a + f)
+    # target = a + b + c + d + e + f
     return pd.DataFrame({"a": a, "b": b, "c": c, "d": d, "e": e, "f": f, "target": target})
 
 
@@ -144,7 +143,7 @@ def test_mi_simple():
 
 
 def test_structure():
-    data = generate_trading_like_data(n_samples=10000)
+    data = generate_trading_like_data(n_samples=1000)
     X = data.drop(columns=["target"])
     y = data["target"]
     show_structure(
@@ -158,7 +157,7 @@ def test_structure():
 
 
 def simple_test_structure():
-    data = generate_simple_data(n_samples=10000)
+    data = generate_simple_data(n_samples=1000)
     X = data.drop(columns=["target"])
     y = data["target"]
     show_structure(
@@ -186,4 +185,4 @@ def very_simple_test_structure():
 
 
 if __name__ == "__main__":
-    simple_test_structure()
+    test_structure()

@@ -11,7 +11,7 @@ from beartype.typing import Self
 @dataclass
 class InfoDecomposition:
     mi_joint: float
-    mi_additive: float
+    mi_linear: float
     mi_a: float
     mi_b: float
 
@@ -45,7 +45,7 @@ class MITree:
         right_lines = str(self.right).splitlines()
         fmt = lambda x: f"{x:.3f}" if x is not None else "None"
         a, b = fmt(self.mi_target), fmt(self.mi_join)
-        c, d = fmt(self.decomp.mi_joint), fmt(self.decomp.mi_additive)
+        c, d = fmt(self.decomp.mi_joint), fmt(self.decomp.mi_linear)
         e, f = fmt(self.decomp.mi_a), fmt(self.decomp.mi_b)
         stats = [
             f"---(target: {a} | join: {b})",
@@ -89,8 +89,8 @@ def pid_to_color(pid: InfoDecomposition | None) -> str:
         return "rgb(128,128,128)"
 
     baseline = max(max(pid.mi_a, pid.mi_b), 0)
-    additive_synergy = max(pid.mi_additive - baseline, 0)
-    joint_synergy = max(pid.mi_joint - pid.mi_additive, 0)
+    additive_synergy = max(pid.mi_linear - baseline, 0)
+    joint_synergy = max(pid.mi_joint - pid.mi_linear, 0)
 
     red = int(255 * baseline)
     green = int(255 * additive_synergy)
@@ -180,7 +180,7 @@ def render_tree_interactive(tree: MITree, output_file: str = "tree.html") -> Non
         fmt = lambda x: f"{x:.3f}" if x is not None else "None"
         if tree_node.decomp:
             mi_target, mi_join = fmt(tree_node.mi_target), fmt(tree_node.mi_join)
-            mi_joint, mi_additive = fmt(tree_node.decomp.mi_joint), fmt(tree_node.decomp.mi_additive)
+            mi_joint, mi_additive = fmt(tree_node.decomp.mi_joint), fmt(tree_node.decomp.mi_linear)
             mi_a, mi_b = fmt(tree_node.decomp.mi_a), fmt(tree_node.decomp.mi_b)
             hover_info = f"Name: {tree_node.name or 'Internal'}<br>" f"Target MI: {mi_target}<br>" f"Join MI: {mi_join}<br>" f"MI Joint: {mi_joint}<br>" f"MI Additive: {mi_additive}<br>" f"MI A: {mi_a}<br>" f"MI B: {mi_b}"
         else:

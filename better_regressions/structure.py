@@ -16,12 +16,8 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import cross_val_predict
 from tqdm import tqdm
 
-from better_regressions import Silencer
-from better_regressions.binned import (
-    BinnedRegression,
-    OneHotRegression,
-    QuantileBinnerXY,
-)
+from better_regressions import Linear, Scaler, Silencer
+from better_regressions.binned import BinnedRegression
 from better_regressions.tree_rendering import (
     InfoDecomposition,
     MITree,
@@ -39,6 +35,34 @@ def mi_knn(x: Float[ND, "n"], y: Float[ND, "n"]) -> float:
 
 
 @typed
+def quantile_bins(x: Float[ND, "n"], q: int) -> Float[ND, "m"]:
+    # Using KMeans++ to find centroids for binning
+    with Silencer():  # KMeans can be verbose with convergence warnings
+        kmeans = KMeans(n_clusters=q, init="k-means++", n_init="auto", random_state=42)
+        kmeans.fit(x.reshape(-1, 1))
+    centroids = np.sort(kmeans.cluster_centers_.flatten())
+    prev_centroids = np.roll(centroids, 1)
+    rng = np.quantile(x, 0.98) - np.quantile(x, 0.02)
+    mask = np.abs(centroids - prev_centroids) < 1e-9 * rng
+    centroids = np.delete(centroids, mask)
+
+    # Compute edges as midpoints between centroids
+    edges = np.zeros(len(centroids) + 1)
+    edges[1:-1] = (centroids[:-1] + centroids[1:]) / 2
+    edges[0] = x.min() - 1e-3 * rng
+    edges[-1] = x.max() + 1e-3 * rng
+    return edges
+
+
+@typed
+def entropy_quantile(x: Float[ND, "n"], q: int = 8) -> float:
+    x_edges = quantile_bins(x, q)
+    p_x, _ = np.histogram(x, bins=x_edges)
+    p_x = np.clip(p_x / np.sum(p_x), EPS, 1)
+    return -np.sum(p_x * np.log2(p_x))
+
+
+@typed
 def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
     """
     Computes normalized mutual information between x and y using bins found by KMeans.
@@ -48,44 +72,15 @@ def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
     x_edges = quantile_bins(x, q)
     y_edges = quantile_bins(y, q)
 
-    # H(x)
-    p_x, _ = np.histogram(x, bins=x_edges)
-    p_x = np.clip(p_x / np.sum(p_x), EPS, 1)
-    h_x = -np.sum(p_x * np.log2(p_x))
+    h_x = entropy_quantile(x, q)
+    h_y = entropy_quantile(y, q)
 
-    # H(y)
-    p_y_counts, _ = np.histogram(y, bins=y_edges)
-    p_y = p_y_counts / np.sum(p_y_counts)
-    h_y = -np.sum(p_y * np.log2(p_y + EPS))
-
-    # H(x, y)
     counts_xy, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
     p_xy = np.clip(counts_xy / np.sum(counts_xy), EPS, 1)
     h_xy = -np.sum(p_xy * np.log2(p_xy))
 
     mi = h_x + h_y - h_xy
-    return float(np.clip(mi / (min(h_x, h_y) + EPS), 0, 1))
-
-
-@typed
-def quantile_bins(x: Float[ND, "n"], q: int) -> Float[ND, "qp1"]:
-    # Using KMeans++ to find centroids for binning
-    with Silencer():  # KMeans can be verbose with convergence warnings
-        kmeans = KMeans(n_clusters=q, init="k-means++", n_init="auto", random_state=42)
-        kmeans.fit(x.reshape(-1, 1))
-    centroids = np.sort(kmeans.cluster_centers_.flatten())
-    prev_centroids = np.roll(centroids, 1)
-    rng = np.quantile(x, 0.98) - np.quantile(x, 0.02)
-    mask = np.abs(centroids - prev_centroids) < 1e-9 * rng
-    centroids[mask] = np.inf
-    centroids = np.sort(centroids)
-
-    # Compute edges as midpoints between centroids
-    edges = np.zeros(q + 1)
-    edges[1:-1] = (centroids[:-1] + centroids[1:]) / 2
-    edges[0] = -np.inf
-    edges[-1] = np.inf
-    return edges
+    return float(mi)
 
 
 @typed
@@ -166,65 +161,39 @@ def plot_copula(
 
 @typed
 def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int = 6) -> InfoDecomposition:
-    binner_concat = QuantileBinnerXY(q, q, mode="concat")
-    binner_outer = QuantileBinnerXY(q, q, mode="outer")
-    binner_a = QuantileBinnerXY(q, q, mode="concat")
-    binner_b = QuantileBinnerXY(q, q, mode="concat")
-    binner_concat.fit(np.column_stack([a, b]), y)
-    binner_outer.fit(np.column_stack([a, b]), y)
-    binner_a.fit(a.reshape(-1, 1), y)
-    binner_b.fit(b.reshape(-1, 1), y)
+    X = np.column_stack([a, b])
+    linear = Scaler(Linear(alpha=1e-9))
+    linear_preds = cross_val_predict(linear, X, y, cv=5, method="predict")
+    # add some noise to ensure that MI(linear_preds, y) doesn't catch weird non-linearities
+    linear_preds += np.random.randn(len(y)) * linear_preds.std() * 1e-3
 
-    X_concat = binner_concat.transform_X(np.column_stack([a, b]))
-    X_outer = binner_outer.transform_X(np.column_stack([a, b]))
-    X_only_a = binner_a.transform_X(a.reshape(-1, 1))
-    X_only_b = binner_b.transform_X(b.reshape(-1, 1))
-    y_binned = binner_concat.transform_y(y)
-    y_bins = len(binner_concat.y_binner_.bin_centers_)
+    a_edges = quantile_bins(a, q)
+    b_edges = quantile_bins(b, q)
+    a_indices = np.clip(np.digitize(a, a_edges), 0, q - 1)
+    a_unique = np.unique(a_indices)
+    b_indices = np.clip(np.digitize(b, b_edges), 0, q - 1)
+    b_unique = np.unique(b_indices)
+    joint_preds = np.zeros(len(y))
+    for a_idx in a_unique:
+        for b_idx in b_unique:
+            mask = (a_indices == a_idx) & (b_indices == b_idx)
+            joint_preds[mask] = np.mean(y[mask])
 
-    only_a_preds = cross_val_predict(OneHotRegression(), X_only_a, y_binned, cv=2, method="predict_proba")
-    only_a_preds = np.clip(only_a_preds[:, :y_bins], EPS, 1)
-    only_b_preds = cross_val_predict(OneHotRegression(), X_only_b, y_binned, cv=2, method="predict_proba")
-    only_b_preds = np.clip(only_b_preds[:, :y_bins], EPS, 1)
-    concat_preds = cross_val_predict(OneHotRegression(), X_concat, y_binned, cv=2, method="predict_proba")
-    concat_preds = np.clip(concat_preds[:, :y_bins], EPS, 1)
-    outer_preds = cross_val_predict(OneHotRegression(), X_outer, y_binned, cv=2, method="predict_proba")
-    outer_preds = np.clip(outer_preds[:, :y_bins], EPS, 1)
+    h_y = entropy_quantile(y, q)
+    mi_a = mi_quantile(a, y, q) / h_y
+    mi_b = mi_quantile(b, y, q) / h_y
+    mi_linear = mi_quantile(linear_preds, y, q) / h_y
+    mi_joint = mi_quantile(joint_preds, y, q) / h_y
 
-    p_y = np.bincount(y_binned)
-    p_y = np.clip(p_y / len(y), EPS, 1)
-    h_y = -np.sum(p_y * np.log2(p_y))
+    print(mi_quantile(linear_preds, y, q))
 
-    indices = np.arange(len(y))
-    h_only_a = -np.log2(only_a_preds[indices, y_binned]).mean()
-    h_only_b = -np.log2(only_b_preds[indices, y_binned]).mean()
-    h_concat = -np.log2(concat_preds[indices, y_binned]).mean()
-    h_outer = -np.log2(outer_preds[indices, y_binned]).mean()
-
-    # np.set_printoptions(formatter={"float_kind": lambda x: f"{x:.2f}"})
-    # print(f"h_y: {h_y}")
-    # print(f"h_only_a: {h_only_a}")
-    # print(f"h_only_b: {h_only_b}")
-    # print(f"h_concat: {h_concat}")
-    # print(f"h_outer: {h_outer}")
-
-    mi_joint = h_y - h_outer  # maximum reduction of entropy we can achieve with (a, b)
-    mi_additive = h_y - h_concat  # maximum reduction of entropy we can achieve, but without synergy effects
-    mi_a = h_y - h_only_a  # mutual information between a and y
-    mi_b = h_y - h_only_b  # mutual information between b and y
-
-    mi_joint /= h_y
-    mi_additive /= h_y
-    mi_a /= h_y
-    mi_b /= h_y
-
-    return InfoDecomposition(mi_joint=mi_joint, mi_additive=mi_additive, mi_a=mi_a, mi_b=mi_b)
+    return InfoDecomposition(mi_joint=mi_joint, mi_linear=mi_linear, mi_a=mi_a, mi_b=mi_b)
 
 
 @typed
 def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> tuple[MITree, dict[tuple[int, int], float]]:
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
-        model = BinnedRegression(X_bins=q, y_bins=q, mode="outer")
+        model = BinnedRegression(X_bins=q, y_bins=q, mode="concat")
         X = np.column_stack([xi, xj])
         return cross_val_predict(model, X, y, cv=3, method="predict")
 
@@ -352,8 +321,8 @@ def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n 
     for i in tqdm(range(k), desc="Computing PID for matrices"):
         for j in range(i + 1, k):
             pid_result = pid_quantile(y_numpy, X_numpy[:, i], X_numpy[:, j], q)
-            synergy = cut_small(pid_result.mi_joint - pid_result.mi_additive)
-            redundancy = cut_small(pid_result.mi_a + pid_result.mi_b - pid_result.mi_additive)
+            synergy = cut_small(pid_result.mi_joint - pid_result.mi_linear)
+            redundancy = cut_small(pid_result.mi_a + pid_result.mi_b - pid_result.mi_linear)
             total = max(pid_result.mi_joint, 0.05)
             synergies[i, j] = synergies[j, i] = synergy / total
             redundancies[i, j] = redundancies[j, i] = redundancy / total
@@ -441,8 +410,23 @@ def show_structure(
         _perform_and_plot_factor_analysis(X, X_numpy, y_numpy, output_dir, leaf_names)
 
 
-def test_pid():
+def test_mi_quantile():
     N = 10**4
+    a = np.random.randint(0, 2, N)
+    b = np.random.randint(0, 2, N)
+    y = 2 * a + b
+    a = a.astype(float)
+    b = b.astype(float)
+    y = y.astype(float)
+    print(a[:10])
+    print(b[:10])
+    print(y[:10])
+    print(mi_quantile(a, y))
+    print(mi_quantile(b, y))
+
+
+def test_pid():
+    N = 10**5
 
     print("1. Independent coins:")
     a = np.random.binomial(
@@ -454,7 +438,7 @@ def test_pid():
     y = np.random.binomial(1, 0.5, N).astype(float)
     result = pid_quantile(y, a, b)
     print(f"   Joint:      {result.mi_joint:.4f}")
-    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   Additive:   {result.mi_linear:.4f}")
     print(f"   A:          {result.mi_a:.4f}")
     print(f"   B:          {result.mi_b:.4f}")
     print()
@@ -465,7 +449,7 @@ def test_pid():
     y = (a.astype(int) ^ b.astype(int)).astype(float)
     result = pid_quantile(y, a, b)
     print(f"   Joint:      {result.mi_joint:.4f}")
-    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   Additive:   {result.mi_linear:.4f}")
     print(f"   A:          {result.mi_a:.4f}")
     print(f"   B:          {result.mi_b:.4f}")
     print()
@@ -478,7 +462,7 @@ def test_pid():
     b = (y.astype(int) ^ noise_b.astype(int)).astype(float)
     result = pid_quantile(y, a, b)
     print(f"   Joint:      {result.mi_joint:.4f}")
-    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   Additive:   {result.mi_linear:.4f}")
     print(f"   A:          {result.mi_a:.4f}")
     print(f"   B:          {result.mi_b:.4f}")
     print()
@@ -489,7 +473,7 @@ def test_pid():
     y = a + b
     result = pid_quantile(y, a, b)
     print(f"   Joint:      {result.mi_joint:.4f}")
-    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   Additive:   {result.mi_linear:.4f}")
     print(f"   A:          {result.mi_a:.4f}")
     print(f"   B:          {result.mi_b:.4f}")
     print()
@@ -502,12 +486,13 @@ def test_pid():
     a = a.astype(float)
     b = b.astype(float)
     y = y.astype(float)
-    result = pid_quantile(y, a, b, q=4)
+    result = pid_quantile(y, a, b)
     print(f"   Joint:      {result.mi_joint:.4f}")
-    print(f"   Additive:   {result.mi_additive:.4f}")
+    print(f"   Additive:   {result.mi_linear:.4f}")
     print(f"   A:          {result.mi_a:.4f}")
     print(f"   B:          {result.mi_b:.4f}")
 
 
 if __name__ == "__main__":
     test_pid()
+    # test_mi_quantile()
