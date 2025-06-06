@@ -162,22 +162,18 @@ def plot_copula(
 def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int = 6) -> InfoDecomposition:
     X = np.column_stack([a, b])
     linear = Scaler(Linear(alpha=1e-9))
-    linear_preds = cross_val_predict(linear, X, y, cv=5, method="predict")
-    # add some noise to ensure that MI(linear_preds, y) doesn't catch weird non-linearities
-    linear_preds += np.random.randn(len(y)) * linear_preds.std() * 1e-3
+    linear.fit(X, y)
+    linear_preds = cross_val_predict(linear, X, y, cv=3, method="predict")
 
     a_edges = quantile_bins(a, q)
     b_edges = quantile_bins(b, q)
     a_indices = np.clip(np.digitize(a, a_edges), 0, q - 1)
-    a_unique = np.unique(a_indices)
     b_indices = np.clip(np.digitize(b, b_edges), 0, q - 1)
-    b_unique = np.unique(b_indices)
+    joint_indices = a_indices * q + b_indices
     joint_preds = np.zeros(len(y))
-    for a_idx in a_unique:
-        for b_idx in b_unique:
-            mask = (a_indices == a_idx) & (b_indices == b_idx)
-            if np.sum(mask) > 0:
-                joint_preds[mask] = np.mean(y[mask])
+    _, inverse_indices = np.unique(joint_indices, return_inverse=True)
+    joint_means = np.bincount(inverse_indices, weights=y) / (np.bincount(inverse_indices) + EPS)
+    joint_preds = joint_means[inverse_indices]
 
     h_y = entropy_quantile(y, q)
     mi_a = mi_quantile(a, y, q) / h_y
@@ -192,7 +188,8 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
         model = Scaler(Linear(alpha=1e-9))
         X = np.column_stack([xi, xj])
-        return cross_val_predict(model, X, y, cv=3, method="predict")
+        model.fit(X, y)
+        return model.predict(X)
 
     n, k_initial = X.shape
     h_y = entropy_quantile(y, q)

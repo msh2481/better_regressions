@@ -143,21 +143,21 @@ def test_mi_simple():
 
 
 def test_structure():
-    data = generate_trading_like_data(n_samples=1000)
+    data = generate_trading_like_data(n_samples=2000)
     X = data.drop(columns=["target"])
     y = data["target"]
     show_structure(
         X,
         y,
         "output",
-        do_regional_mi=True,
+        do_regional_mi=False,
         do_structure_matrices=True,
         do_factor_analysis=True,
     )
 
 
 def simple_test_structure():
-    data = generate_simple_data(n_samples=1000)
+    data = generate_simple_data(n_samples=10000)
     X = data.drop(columns=["target"])
     y = data["target"]
     show_structure(
@@ -185,4 +185,4 @@ def very_simple_test_structure():
 
 
 if __name__ == "__main__":
-    very_simple_test_structure()
+    test_structure()
