@@ -17,7 +17,7 @@ Advanced regression methods with an sklearn-like interface.
 - `Soft`: Mixture of regressors based on quantile classification
 - `Stabilize`: Robust scaling & clipping transformation for features/targets
 - `AutoClassifier`: Classification with automatic model selection (LogisticRegression or XGBoost, with auto depth selection)
-- `Adapter`: Bins features and target, then trains a classifier. This way it can learn non-linear relationships and it also models the target distribution (not only its mean).
+- `BinnedRegression`: Bins features and target, then trains a classifier. This way it can learn non-linear relationships and it also models the target distribution (not only its mean).
 - `EDA`: Exploratory Data Analysis utilities
   - `plot_distribution`: Visualize sample distributions with fitted t-distribution parameters
   - `plot_trend`: Automatically detect and visualize relationships between variables + Pearson/Spearman correlation

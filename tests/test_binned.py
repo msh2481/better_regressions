@@ -1,11 +1,10 @@
 import numpy as np
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import mean_squared_error
 
-from better_regressions.adapter import Adapter
+from better_regressions.binned import BinnedRegression
 
 
-def test_adapter_modes():
+def test_binned_modes():
     np.random.seed(42)
     N = 10000
 
@@ -18,7 +17,7 @@ def test_adapter_modes():
 
     modes = ["concat", "outer"]
 
-    print("Testing Adapter with different modes on edge cases")
+    print("Testing BinnedRegression with different modes on edge cases")
     print("=" * 60)
 
     for case_name, y_func in test_cases:
@@ -40,13 +39,12 @@ def test_adapter_modes():
         results = {}
 
         for mode in modes:
-            # Create and fit adapter
-            adapter = Adapter(classifier=LogisticRegression(C=1e6, max_iter=1000), X_bins=4, y_bins=4, mode=mode)
-            adapter.fit(X_train, y_train)
+            binned = BinnedRegression(X_bins=4, y_bins=4, mode=mode)
+            binned.fit(X_train, y_train)
 
             # Calculate metrics
-            log_loss = -adapter.logpdf(X_test, y_test) / len(y_test)
-            predictions = adapter.predict(X_test)
+            log_loss = -binned.logpdf(X_test, y_test) / len(y_test)
+            predictions = binned.predict(X_test)
             mse = mean_squared_error(y_test, predictions)
 
             # Calculate accuracy for discrete cases
@@ -80,4 +78,4 @@ def test_adapter_modes():
 
 
 if __name__ == "__main__":
-    test_adapter_modes()
+    test_binned_modes()

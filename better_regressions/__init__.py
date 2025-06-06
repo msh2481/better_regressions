@@ -1,6 +1,6 @@
 """Better Regressions - Advanced regression methods with sklearn-like interface."""
 
-from better_regressions.adapter import Adapter, AutoAdapter, binning_regressor
+from better_regressions.binned import AutoBinnedRegression, BinnedRegression
 from better_regressions.eda import (
     plot_distribution,
     plot_trend,
@@ -41,10 +41,11 @@ __all__ = [
     "QuantileTransformer",
     "Stabilize",
     "Smooth",
+    "BinnedRegression",
+    "AutoBinnedRegression",
     "Silencer",
     "auto_angle",
     "auto_linear",
-    "binning_regressor",
     "plot_distribution",
     "plot_trend",
     "plot_trend_continuous",
