@@ -9,7 +9,7 @@ from beartype.typing import Self
 
 
 @dataclass
-class PIDResult:
+class InfoDecomposition:
     redundancy: float
     unique_a: float
     unique_b: float
@@ -20,12 +20,12 @@ class PIDResult:
 class MITree:
     mi_target: float
     mi_join: float | None = None
-    pid: PIDResult | None = None
+    pid: InfoDecomposition | None = None
     left: Self | None = None
     right: Self | None = None
     name: str | None = None
 
-    def __init__(self, mi_target: float, name: str | None = None, mi_join: float | None = None, pid: PIDResult | None = None, left: Self | None = None, right: Self | None = None):
+    def __init__(self, mi_target: float, name: str | None = None, mi_join: float | None = None, pid: InfoDecomposition | None = None, left: Self | None = None, right: Self | None = None):
         self.mi_target = mi_target
         self.name = name
         self.pid = pid
@@ -87,7 +87,7 @@ def tree_to_networkx(tree: MITree, node_id: int = 0) -> tuple[nx.DiGraph, dict[i
 
 
 @typed
-def pid_to_color(pid: PIDResult | None, total: float | int) -> str:
+def pid_to_color(pid: InfoDecomposition | None, total: float | int) -> str:
     if pid is None or total < 1e-6:
         return "rgb(128,128,128)"
 

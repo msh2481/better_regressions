@@ -71,9 +71,12 @@ class QuantileBinner(BaseEstimator, TransformerMixin):
 
 
 class QuantileBinnerXY(BaseEstimator, TransformerMixin):
-    def __init__(self, X_bins: int = 10, y_bins: int = 10):
+    def __init__(self, X_bins: int = 10, y_bins: int = 10, mode: str = "concat"):
         self.X_bins = X_bins
         self.y_bins = y_bins
+        if mode not in ["concat", "outer"]:
+            raise ValueError("mode must be 'concat' or 'outer'")
+        self.mode = mode
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"] = None):
@@ -87,41 +90,9 @@ class QuantileBinnerXY(BaseEstimator, TransformerMixin):
         return self
 
     @typed
-    def transform_X(self, X: Float[ND, "n_samples n_features"]) -> list[Float[ND, "n_samples n_bins"]]:
-        return [self.X_binners_[i].transform(X[:, i]) for i in range(X.shape[1])]
-
-    @typed
-    def transform_y(self, y: Float[ND, "n_samples"]) -> Int[ND, "n_samples"]:
-        return self.y_binner_.transform(y)
-
-    @typed
-    def inverse_transform_y(self, y_binned: Float[ND, "n_samples"]) -> Float[ND, "n_samples"]:
-        return self.y_binner_.bin_centers_[y_binned.astype(int)]
-
-
-class OneHotRegression(BaseEstimator, TransformerMixin):
-    def __init__(self, mode: str = "concat"):
-        if mode not in ["concat", "outer"]:
-            raise ValueError("mode must be 'concat' or 'outer'")
-        self.mode = mode
-
-    @typed
-    def fit(self, X_binned_list: list[Float[ND, "n_samples n_bins"]], y_binned: Int[ND, "n_samples"]):
-        X_combined = self._combine_features(X_binned_list)
-
-        # Handle missing classes by adding synthetic data
-        missing_classes = np.setdiff1d(np.arange(int(y_binned.max()) + 1), np.unique(y_binned))
-        if len(missing_classes) > 0:
-            x_median = np.median(X_combined, axis=0)
-            add_to_X = np.tile(x_median, (len(missing_classes), 1))
-            add_to_y = missing_classes
-            X_combined = np.concatenate([X_combined, add_to_X], axis=0)
-            y_binned = np.concatenate([y_binned, add_to_y], axis=0)
-
-        self.classifier_ = LogisticRegression(C=1e6, max_iter=1000)
-        with Silencer():
-            self.classifier_.fit(X_combined, y_binned)
-        return self
+    def transform_X(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples n_combined"]:
+        X_binned_list = [self.X_binners_[i].transform(X[:, i]) for i in range(X.shape[1])]
+        return self._combine_features(X_binned_list)
 
     @typed
     def _combine_features(self, X_binned_list: list[Float[ND, "n_samples n_bins"]]) -> Float[ND, "n_samples n_combined"]:
@@ -138,20 +109,42 @@ class OneHotRegression(BaseEstimator, TransformerMixin):
             raise ValueError(f"Invalid mode: {self.mode}")
 
     @typed
-    def predict_proba(self, X_binned_list: list[Float[ND, "n_samples n_bins"]]) -> Float[ND, "n_samples n_classes"]:
-        X_combined = self._combine_features(X_binned_list)
+    def transform_y(self, y: Float[ND, "n_samples"]) -> Int[ND, "n_samples"]:
+        return self.y_binner_.transform(y)
+
+    @typed
+    def inverse_transform_y(self, y_binned: Float[ND, "n_samples"]) -> Float[ND, "n_samples"]:
+        return self.y_binner_.bin_centers_[y_binned.astype(int)]
+
+
+class OneHotRegression(BaseEstimator, TransformerMixin):
+    def __init__(self):
+        pass
+
+    @typed
+    def fit(self, X_combined: Float[ND, "n_samples n_combined"], y_binned: Int[ND, "n_samples"]):
+        # Handle missing classes by adding synthetic data
+        missing_classes = np.setdiff1d(np.arange(int(y_binned.max()) + 1), np.unique(y_binned))
+        if len(missing_classes) > 0:
+            x_median = np.median(X_combined, axis=0)
+            add_to_X = np.tile(x_median, (len(missing_classes), 1))
+            add_to_y = missing_classes
+            X_combined = np.concatenate([X_combined, add_to_X], axis=0)
+            y_binned = np.concatenate([y_binned, add_to_y], axis=0)
+
+        self.classifier_ = LogisticRegression(C=1e6, max_iter=1000)
+        with Silencer():
+            self.classifier_.fit(X_combined, y_binned)
+        self.classes_ = self.classifier_.classes_
+        return self
+
+    @typed
+    def predict_proba(self, X_combined: Float[ND, "n_samples n_combined"]) -> Float[ND, "n_samples n_classes"]:
         return self.classifier_.predict_proba(X_combined)
 
     @typed
-    def predict(self, X_binned_list: list[Float[ND, "n_samples n_bins"]]) -> Float[ND, "n_samples"]:
-        return self.classifier_.predict(self._combine_features(X_binned_list))
-
-    @typed
-    def logpmf(self, X_binned_list: list[Float[ND, "n_samples n_bins"]], y_binned: Int[ND, "n_samples"]) -> Float[ND, "n_samples"]:
-        indices = np.arange(X_binned_list[0].shape[0])
-        ys = y_binned.astype(int)
-        pmf = self.predict_proba(X_binned_list)[indices, ys]
-        return np.log(pmf + 1e-18)
+    def predict(self, X_combined: Float[ND, "n_samples n_combined"]) -> Float[ND, "n_samples"]:
+        return self.classifier_.predict(X_combined)
 
 
 class BinnedRegression(BaseEstimator, TransformerMixin):
@@ -162,20 +155,20 @@ class BinnedRegression(BaseEstimator, TransformerMixin):
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"] = None):
-        self.binner_ = QuantileBinnerXY(self.X_bins, self.y_bins)
+        self.binner_ = QuantileBinnerXY(self.X_bins, self.y_bins, mode=self.mode)
         self.binner_.fit(X, y)
 
-        X_binned_list = self.binner_.transform_X(X)
+        X_combined = self.binner_.transform_X(X)
         y_binned = self.binner_.transform_y(y)
 
-        self.regressor_ = OneHotRegression(mode=self.mode)
-        self.regressor_.fit(X_binned_list, y_binned)
+        self.regressor_ = OneHotRegression()
+        self.regressor_.fit(X_combined, y_binned)
         return self
 
     @typed
     def predict_proba(self, X: Float[ND, "n_samples n_features"]) -> Float[ND, "n_samples n_bins"]:
-        X_binned_list = self.binner_.transform_X(X)
-        full_results = self.regressor_.predict_proba(X_binned_list)
+        X_combined = self.binner_.transform_X(X)
+        full_results = self.regressor_.predict_proba(X_combined)
         actual_y_bins = len(self.binner_.y_binner_.bin_centers_)
         return full_results[:, :actual_y_bins]
 
@@ -301,7 +294,7 @@ def test_max():
     models = {
         "MLPRegressor": MLPRegressor(hidden_layer_sizes=(100, 100), max_iter=1000),
         "XGBRegressor": XGBRegressor(n_estimators=300, max_depth=3),
-        "BinningRegressor": BinnedRegression(X_bins=3, y_bins=3),
+        "BinningRegressor": BinnedRegression(X_bins=30, y_bins=30),
     }
 
     for model_name, model in models.items():

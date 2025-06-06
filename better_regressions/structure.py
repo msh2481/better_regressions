@@ -13,11 +13,20 @@ from numpy import ndarray as ND
 from scipy import stats
 from sklearn.cluster import KMeans
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.model_selection import KFold
+from sklearn.model_selection import cross_val_predict
 from tqdm import tqdm
 
 from better_regressions import Silencer
-from better_regressions.tree_rendering import MITree, PIDResult, render_tree_interactive
+from better_regressions.binned import (
+    BinnedRegression,
+    OneHotRegression,
+    QuantileBinnerXY,
+)
+from better_regressions.tree_rendering import (
+    InfoDecomposition,
+    MITree,
+    render_tree_interactive,
+)
 
 EPS = 1e-12
 
@@ -156,79 +165,60 @@ def plot_copula(
 
 
 @typed
-def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int = 6) -> PIDResult:
-    np.set_printoptions(formatter={"float_kind": lambda x: f"{x:.5f}"})
-    y_edges = quantile_bins(y, q)
-    a_edges = quantile_bins(a, q)
-    b_edges = quantile_bins(b, q)
+def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int = 6) -> InfoDecomposition:
+    binner_concat = QuantileBinnerXY(q, q, mode="concat")
+    binner_outer = QuantileBinnerXY(q, q, mode="outer")
+    binner_a = QuantileBinnerXY(q, q, mode="concat")
+    binner_b = QuantileBinnerXY(q, q, mode="concat")
+    binner_concat.fit(np.column_stack([a, b]), y)
+    binner_outer.fit(np.column_stack([a, b]), y)
+    binner_a.fit(a.reshape(-1, 1), y)
+    binner_b.fit(b.reshape(-1, 1), y)
 
-    p_ya, _, _ = np.histogram2d(y, a, bins=[y_edges, a_edges])
-    p_yb, _, _ = np.histogram2d(y, b, bins=[y_edges, b_edges])
-    p_yab, _ = np.histogramdd([y, a, b], bins=[y_edges, a_edges, b_edges])
+    X_concat = binner_concat.transform_X(np.column_stack([a, b]))
+    X_outer = binner_outer.transform_X(np.column_stack([a, b]))
+    X_only_a = binner_a.transform_X(a.reshape(-1, 1))
+    X_only_b = binner_b.transform_X(b.reshape(-1, 1))
+    y_binned = binner_concat.transform_y(y)
+    y_bins = len(binner_concat.y_binner_.bin_centers_)
 
-    p_y, _ = np.histogram(y, bins=y_edges)
-    p_a, _ = np.histogram(a, bins=a_edges)
-    p_b, _ = np.histogram(b, bins=b_edges)
+    only_a_preds = cross_val_predict(OneHotRegression(), X_only_a, y_binned, cv=3, method="predict_proba")
+    only_a_preds = np.clip(only_a_preds[:, :y_bins], EPS, 1)
+    only_b_preds = cross_val_predict(OneHotRegression(), X_only_b, y_binned, cv=3, method="predict_proba")
+    only_b_preds = np.clip(only_b_preds[:, :y_bins], EPS, 1)
+    concat_preds = cross_val_predict(OneHotRegression(), X_concat, y_binned, cv=3, method="predict_proba")
+    concat_preds = np.clip(concat_preds[:, :y_bins], EPS, 1)
+    outer_preds = cross_val_predict(OneHotRegression(), X_outer, y_binned, cv=3, method="predict_proba")[:, :y_bins]
+    outer_preds = np.clip(outer_preds, EPS, 1)
 
-    p_ya = np.clip(p_ya / len(y), EPS, 1)
-    p_yb = np.clip(p_yb / len(y), EPS, 1)
-    p_yab = np.clip(p_yab / len(y), EPS, 1)
+    p_y = np.bincount(y_binned)
     p_y = np.clip(p_y / len(y), EPS, 1)
-    p_a = np.clip(p_a / len(y), EPS, 1)
-    p_b = np.clip(p_b / len(y), EPS, 1)
+    h_y = -np.sum(p_y * np.log2(p_y))
 
-    p_a_given_y = p_ya / p_y[:, None]
-    p_b_given_y = p_yb / p_y[:, None]
+    indices = np.arange(len(y))
+    h_only_a = np.log(only_a_preds[indices, y_binned]).sum()
+    h_only_b = np.log(only_b_preds[indices, y_binned]).sum()
+    h_concat = np.log(concat_preds[indices, y_binned]).sum()
+    h_outer = np.log(outer_preds[indices, y_binned]).sum()
 
-    pmi_a_per_y = np.sum(p_a_given_y * np.log2(p_a_given_y / p_a[None, :]), axis=1)
-    pmi_b_per_y = np.sum(p_b_given_y * np.log2(p_b_given_y / p_b[None, :]), axis=1)
+    total = h_y - h_outer  # maximum reduction of entropy we can achieve with (a, b)
+    mi_a = h_y - h_only_a  # mutual information between a and y
+    mi_b = h_y - h_only_b  # mutual information between b and y
+    wo_synergy = h_y - h_concat  # maximum reduction of entropy we can achieve, but without synergy effects
+    synergy = total - wo_synergy
+    redundancy = mi_a + mi_b - wo_synergy  # because wo_synergy = unique a + unique b + redundancy, and mi_a = unique a + redundancy, ...
+    unique_a = mi_a - redundancy
+    unique_b = mi_b - redundancy
 
-    print(pmi_a_per_y)
-    print(pmi_b_per_y)
-
-    redundancy = np.sum(p_y * np.minimum(pmi_a_per_y, pmi_b_per_y))
-    unique_a = np.sum(p_y * (pmi_a_per_y - np.minimum(pmi_a_per_y, pmi_b_per_y)))
-    unique_b = np.sum(p_y * (pmi_b_per_y - np.minimum(pmi_a_per_y, pmi_b_per_y)))
-
-    p_ab = np.sum(p_yab, axis=0)
-    p_y_given_ab = p_yab / p_ab[None, :, :]
-    total = np.sum(p_yab * np.log2(p_y_given_ab / p_y[:, None, None]))
-
-    synergy = total - (unique_a + unique_b + redundancy)
-
-    y_entropy = -np.sum(p_y * np.log2(p_y + EPS))
-    redundancy = np.clip(redundancy / y_entropy, 0, 1)
-    unique_a = np.clip(unique_a / y_entropy, 0, 1)
-    unique_b = np.clip(unique_b / y_entropy, 0, 1)
-    total = np.clip(total / y_entropy, 0, 1)
-    synergy = np.clip(synergy / y_entropy, 0, 1)
-
-    return PIDResult(redundancy=redundancy, unique_a=unique_a, unique_b=unique_b, synergy=synergy, total=total)
+    return InfoDecomposition(redundancy=redundancy, unique_a=unique_a, unique_b=unique_b, synergy=synergy, total=total)
 
 
 @typed
 def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> tuple[MITree, dict[tuple[int, int], float]]:
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
-        predictions = np.zeros_like(y)
-        xi_edges = quantile_bins(xi, q)
-        xj_edges = quantile_bins(xj, q)
-        num_bins_i = len(xi_edges) - 1
-        num_bins_j = len(xj_edges) - 1
-        # Use KFold for cross-validation to prevent data leakage
-        kf = KFold(n_splits=3, shuffle=True, random_state=42)
-        for train_index, test_index in kf.split(xi):
-            xi_train, xi_test = xi[train_index], xi[test_index]
-            xj_train, xj_test = xj[train_index], xj[test_index]
-            y_train = y[train_index]
-            cell_means, _, _, _ = stats.binned_statistic_2d(xi_train, xj_train, y_train, statistic="median", bins=[xi_edges, xj_edges])
-            cell_means = np.nan_to_num(cell_means, nan=np.median(y_train))
-
-            xi_test_binned = np.digitize(xi_test, xi_edges) - 1
-            xj_test_binned = np.digitize(xj_test, xj_edges) - 1
-            xi_test_binned = np.clip(xi_test_binned, 0, num_bins_i - 1)
-            xj_test_binned = np.clip(xj_test_binned, 0, num_bins_j - 1)
-            predictions[test_index] = cell_means[xi_test_binned, xj_test_binned]
-        return predictions
+        model = BinnedRegression(X_bins=q, y_bins=q, mode="outer")
+        X = np.column_stack([xi, xj])
+        return cross_val_predict(model, X, y, cv=3, method="predict")
 
     n, k_initial = X.shape
     MIs_to_return: dict[tuple[int, int], float] = {}
@@ -492,6 +482,7 @@ def test_pid():
     # print(f"   Total:      {result.total:.4f}")
     # print()
     print("5. Complete separation:")
+    N = 10
     a = np.random.randint(0, 2, N)
     b = np.random.randint(0, 2, N)
     y = 2 * a + b
