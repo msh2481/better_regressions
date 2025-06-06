@@ -132,7 +132,7 @@ class OneHotRegression(BaseEstimator, TransformerMixin):
             X_combined = np.concatenate([X_combined, add_to_X], axis=0)
             y_binned = np.concatenate([y_binned, add_to_y], axis=0)
 
-        self.classifier_ = LogisticRegression(C=1e6, max_iter=1000)
+        self.classifier_ = LogisticRegression(C=1e6)
         with Silencer():
             self.classifier_.fit(X_combined, y_binned)
         self.classes_ = self.classifier_.classes_

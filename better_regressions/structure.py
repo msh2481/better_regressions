@@ -182,31 +182,31 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
     y_binned = binner_concat.transform_y(y)
     y_bins = len(binner_concat.y_binner_.bin_centers_)
 
-    only_a_preds = cross_val_predict(OneHotRegression(), X_only_a, y_binned, cv=3, method="predict_proba")
+    only_a_preds = cross_val_predict(OneHotRegression(), X_only_a, y_binned, cv=2, method="predict_proba")
     only_a_preds = np.clip(only_a_preds[:, :y_bins], EPS, 1)
-    only_b_preds = cross_val_predict(OneHotRegression(), X_only_b, y_binned, cv=3, method="predict_proba")
+    only_b_preds = cross_val_predict(OneHotRegression(), X_only_b, y_binned, cv=2, method="predict_proba")
     only_b_preds = np.clip(only_b_preds[:, :y_bins], EPS, 1)
-    concat_preds = cross_val_predict(OneHotRegression(), X_concat, y_binned, cv=3, method="predict_proba")
+    concat_preds = cross_val_predict(OneHotRegression(), X_concat, y_binned, cv=2, method="predict_proba")
     concat_preds = np.clip(concat_preds[:, :y_bins], EPS, 1)
-    outer_preds = cross_val_predict(OneHotRegression(), X_outer, y_binned, cv=3, method="predict_proba")[:, :y_bins]
-    outer_preds = np.clip(outer_preds, EPS, 1)
+    outer_preds = cross_val_predict(OneHotRegression(), X_outer, y_binned, cv=2, method="predict_proba")
+    outer_preds = np.clip(outer_preds[:, :y_bins], EPS, 1)
 
     p_y = np.bincount(y_binned)
     p_y = np.clip(p_y / len(y), EPS, 1)
     h_y = -np.sum(p_y * np.log2(p_y))
 
     indices = np.arange(len(y))
-    h_only_a = np.log(only_a_preds[indices, y_binned]).sum()
-    h_only_b = np.log(only_b_preds[indices, y_binned]).sum()
-    h_concat = np.log(concat_preds[indices, y_binned]).sum()
-    h_outer = np.log(outer_preds[indices, y_binned]).sum()
+    h_only_a = -np.log2(only_a_preds[indices, y_binned]).mean()
+    h_only_b = -np.log2(only_b_preds[indices, y_binned]).mean()
+    h_concat = -np.log2(concat_preds[indices, y_binned]).mean()
+    h_outer = -np.log2(outer_preds[indices, y_binned]).mean()
 
     total = h_y - h_outer  # maximum reduction of entropy we can achieve with (a, b)
     mi_a = h_y - h_only_a  # mutual information between a and y
     mi_b = h_y - h_only_b  # mutual information between b and y
     wo_synergy = h_y - h_concat  # maximum reduction of entropy we can achieve, but without synergy effects
-    synergy = total - wo_synergy
-    redundancy = mi_a + mi_b - wo_synergy  # because wo_synergy = unique a + unique b + redundancy, and mi_a = unique a + redundancy, ...
+    synergy = np.clip(total - wo_synergy, 0, total)
+    redundancy = np.clip(mi_a + mi_b - wo_synergy, 0, min(mi_a, mi_b))  # because wo_synergy = unique a + unique b + redundancy, and mi_a = unique a + redundancy, ...
     unique_a = mi_a - redundancy
     unique_b = mi_b - redundancy
 
@@ -429,23 +429,24 @@ def show_structure(
 
 
 def test_pid():
-    N = 10**6
-    print("=== PID Tests ===\n")
-    # print("1. Independent coins:")
-    # a = np.random.binomial(
-    #     1,
-    #     0.5,
-    #     N,
-    # ).astype(float)
-    # b = np.random.binomial(1, 0.5, N).astype(float)
-    # y = np.random.binomial(1, 0.5, N).astype(float)
-    # result = pid_quantile(y, a, b)
-    # print(f"   Redundancy: {result.redundancy:.4f}")
-    # print(f"   Unique A:   {result.unique_a:.4f}")
-    # print(f"   Unique B:   {result.unique_b:.4f}")
-    # print(f"   Synergy:    {result.synergy:.4f}")
-    # print(f"   Total:      {result.total:.4f}")
-    # print()
+    N = 10**5
+
+    print("1. Independent coins:")
+    a = np.random.binomial(
+        1,
+        0.5,
+        N,
+    ).astype(float)
+    b = np.random.binomial(1, 0.5, N).astype(float)
+    y = np.random.binomial(1, 0.5, N).astype(float)
+    result = pid_quantile(y, a, b)
+    print(f"   Redundancy: {result.redundancy:.4f}")
+    print(f"   Unique A:   {result.unique_a:.4f}")
+    print(f"   Unique B:   {result.unique_b:.4f}")
+    print(f"   Synergy:    {result.synergy:.4f}")
+    print(f"   Total:      {result.total:.4f}")
+    print()
+
     # print("2. Y = A XOR B (synergy):")
     # a = np.random.binomial(1, 0.5, N).astype(float)
     # b = np.random.binomial(1, 0.5, N).astype(float)
@@ -457,6 +458,7 @@ def test_pid():
     # print(f"   Synergy:    {result.synergy:.4f}")
     # print(f"   Total:      {result.total:.4f}")
     # print()
+
     # print("3. A = Y + noise, B = Y + noise (redundancy):")
     # y = np.random.binomial(1, 0.5, N).astype(float)
     # noise_a = np.random.binomial(1, 0.1, N).astype(float)
@@ -470,31 +472,33 @@ def test_pid():
     # print(f"   Synergy:    {result.synergy:.4f}")
     # print(f"   Total:      {result.total:.4f}")
     # print()
-    # print("4. Linear relationship:")
-    # a = np.random.randn(N)
-    # b = np.random.randn(N)
-    # y = a + b
-    # result = pid_quantile(y, a, b)
-    # print(f"   Redundancy: {result.redundancy:.4f}")
-    # print(f"   Unique A:   {result.unique_a:.4f}")
-    # print(f"   Unique B:   {result.unique_b:.4f}")
-    # print(f"   Synergy:    {result.synergy:.4f}")
-    # print(f"   Total:      {result.total:.4f}")
-    # print()
-    print("5. Complete separation:")
-    N = 10
-    a = np.random.randint(0, 2, N)
-    b = np.random.randint(0, 2, N)
-    y = 2 * a + b
-    a = a.astype(float)
-    b = b.astype(float)
-    y = y.astype(float)
-    result = pid_quantile(y, a, b, q=4)
+
+    print("4. Linear relationship:")
+    a = np.random.randn(N)
+    b = np.random.randn(N)
+    y = a + b
+    result = pid_quantile(y, a, b)
     print(f"   Redundancy: {result.redundancy:.4f}")
     print(f"   Unique A:   {result.unique_a:.4f}")
     print(f"   Unique B:   {result.unique_b:.4f}")
     print(f"   Synergy:    {result.synergy:.4f}")
     print(f"   Total:      {result.total:.4f}")
+    print()
+
+    # print("5. Complete separation:")
+    # N = 10**4
+    # a = np.random.randint(0, 2, N)
+    # b = np.random.randint(0, 2, N)
+    # y = 2 * a + b
+    # a = a.astype(float)
+    # b = b.astype(float)
+    # y = y.astype(float)
+    # result = pid_quantile(y, a, b, q=4)
+    # print(f"   Redundancy: {result.redundancy:.4f}")
+    # print(f"   Unique A:   {result.unique_a:.4f}")
+    # print(f"   Unique B:   {result.unique_b:.4f}")
+    # print(f"   Synergy:    {result.synergy:.4f}")
+    # print(f"   Total:      {result.total:.4f}")
 
 
 if __name__ == "__main__":
