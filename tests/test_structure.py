@@ -128,7 +128,14 @@ def test_structure():
     data = generate_synthetic_data(n_samples=10000)
     X = data.drop(columns=["target"])
     y = data["target"]
-    show_structure(X, y, "output")
+    show_structure(
+        X,
+        y,
+        "output",
+        do_regional_mi=True,
+        do_structure_matrices=False,
+        do_factor_analysis=False,
+    )
 
 
 if __name__ == "__main__":

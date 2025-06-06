@@ -49,6 +49,7 @@ source = { editable = "." }
 dependencies = [
     { name = "beartype" },
     { name = "build" },
+    { name = "factor-analyzer" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "jaxtyping" },
@@ -82,6 +83,7 @@ requires-dist = [
     { name = "beartype", specifier = ">=0.10.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
     { name = "build", specifier = ">=1.2.2.post1" },
+    { name = "factor-analyzer", specifier = ">=0.5.1" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "ipywidgets", specifier = ">=8.1.7" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.12.0" },
@@ -484,6 +486,18 @@ sdist = { url = "https://files.pythonhosted.org/packages/91/50/a9d80c47ff289c611
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7b/8f/c4d9bafc34ad7ad5d8dc16dd1347ee0e507a52c3adb6bfa8887e1c6a26ba/executing-2.2.0-py2.py3-none-any.whl", hash = "sha256:11387150cad388d62750327a53d3339fad4888b39a6fe233c3afbb54ecffd3aa", size = 26702 },
 ]
+
+[[package]]
+name = "factor-analyzer"
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/28/19/089a65c4cf7ea407ab001846989b44cf83bc488a6e1fe68e950607251720/factor_analyzer-0.5.1.tar.gz", hash = "sha256:03703cd128ee9f91c9bd191a452b06e4a28296b5a24d11823ebb5d8250e8fdf6", size = 42824 }
 
 [[package]]
 name = "fonttools"

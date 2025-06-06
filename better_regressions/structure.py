@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from beartype import beartype as typed
+from factor_analyzer import FactorAnalyzer
 from jaxtyping import Float
 from loguru import logger
 from matplotlib import pyplot as plt
@@ -12,9 +13,10 @@ from numpy import ndarray as ND
 from scipy import stats
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.model_selection import cross_val_predict
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
-from better_regressions import binning_regressor
+from better_regressions import Silencer, binning_regressor
 from better_regressions.tree_rendering import MITree, PIDResult, render_tree_interactive
 
 EPS = 1e-12
@@ -109,37 +111,37 @@ def plot_copula(
     x_ranked = stats.rankdata(x) / len(x)
     y_ranked = stats.rankdata(y) / len(y)
 
-    fig = plt.figure(figsize=(8, 8))
-    gs = GridSpec(4, 4)
+    fig = plt.figure(figsize=(12, 12))
+    gs = GridSpec(5, 5)
 
-    ax_scatter = fig.add_subplot(gs[1:4, 0:3])
-    ax_hist_x = fig.add_subplot(gs[0, 0:3], sharex=ax_scatter)
-    ax_hist_y = fig.add_subplot(gs[1:4, 3], sharey=ax_scatter)
+    ax_scatter = fig.add_subplot(gs[1:5, 0:4])
+    ax_hist_x = fig.add_subplot(gs[0, 0:4], sharex=ax_scatter)
+    ax_hist_y = fig.add_subplot(gs[1:5, 4], sharey=ax_scatter)
 
-    # Scatter plot of copula
-    ax_scatter.scatter(x_ranked, y_ranked, alpha=0.3, s=5, rasterized=True)
+    kde = stats.gaussian_kde(np.vstack([x_ranked, y_ranked]))
+    xx, yy = np.mgrid[0:1:100j, 0:1:100j]
+    zz = kde(np.vstack([xx.ravel(), yy.ravel()]))
+    ax_scatter.contourf(xx, yy, zz.reshape(xx.shape), levels=15, cmap="Greys")
     ax_scatter.set_xlabel(f"Rank of {x_name}")
     ax_scatter.set_ylabel(f"Rank of {y_name}")
     ax_scatter.set_xlim(0, 1)
     ax_scatter.set_ylim(0, 1)
 
-    # Remove ticks from top and right of scatter
     ax_scatter.tick_params(axis="x", labelbottom=True, labeltop=False)
     ax_scatter.tick_params(axis="y", labelleft=True, labelright=False)
 
-    # Bar plots for regional MI
-    x_bar_pos = (np.arange(q_x) + 0.5) / q_x
-    ax_hist_x.bar(x_bar_pos, mi_per_x, width=1 / q_x * 0.9)
+    x_step_pos = np.linspace(0, 1, q_x)
+    ax_hist_x.step(x_step_pos, mi_per_x, where="mid", color="black", alpha=0.8, linewidth=2)
     ax_hist_x.set_ylabel("MI (bits)")
     ax_hist_x.tick_params(axis="x", labelbottom=False)
     ax_hist_x.set_title(f"Copula of {x_name} and {y_name}")
 
-    y_bar_pos = (np.arange(q_y) + 0.5) / q_y
-    ax_hist_y.barh(y_bar_pos, mi_per_y, height=1 / q_y * 0.9)
+    y_step_pos = np.linspace(0, 1, q_y)
+    ax_hist_y.step(mi_per_y, y_step_pos, where="mid", color="black", alpha=0.8, linewidth=2)
     ax_hist_y.set_xlabel("MI (bits)")
     ax_hist_y.tick_params(axis="y", labelleft=False)
 
-    plt.tight_layout(pad=1.5)
+    plt.tight_layout(pad=1.0)
     if output_file:
         plt.savefig(output_file, dpi=300)
         plt.close()
@@ -270,11 +272,7 @@ def get_leaf_names(tree: MITree) -> list[str]:
     return leaf_names
 
 
-def show_structure(X: pd.DataFrame, y: pd.Series, output_dir: str, q: int = 6):
-    n, k = X.shape
-    X_numpy = X.to_numpy()
-    y_numpy = y.to_numpy()
-
+def _compute_and_plot_copulas_and_regional_mi(X: pd.DataFrame, y_numpy: Float[ND, "n"], output_dir: str):
     copulas_dir = os.path.join(output_dir, "copulas")
     os.makedirs(copulas_dir, exist_ok=True)
     regional_q = 8
@@ -289,22 +287,18 @@ def show_structure(X: pd.DataFrame, y: pd.Series, output_dir: str, q: int = 6):
             x_name=col,
             y_name="target",
         )
-
         padded_mi_x = np.zeros(regional_q)
         padded_mi_x[: len(mi_per_x)] = mi_per_x
         regional_mis_x.append(padded_mi_x)
-
         padded_mi_y = np.zeros(regional_q)
         padded_mi_y[: len(mi_per_y)] = mi_per_y
         regional_mis_y.append(padded_mi_y)
-
     x_regions_df = pd.DataFrame(regional_mis_x, index=X.columns, columns=[f"q{i}" for i in range(regional_q)])
     x_regions_df["total"] = x_regions_df.mean(axis=1)
     x_regions_df.iloc[:, :-1] = x_regions_df.iloc[:, :-1] / x_regions_df["total"].values[:, None]
     x_regions_df = (100 * x_regions_df.sort_values("total", ascending=False)).round().astype(int)
     with open(os.path.join(output_dir, "x_regions.txt"), "w") as f:
         f.write(x_regions_df.to_string())
-
     y_regions_df = pd.DataFrame(regional_mis_y, index=X.columns, columns=[f"q{i}" for i in range(regional_q)])
     y_regions_df["total"] = y_regions_df.mean(axis=1)
     y_regions_df.iloc[:, :-1] = y_regions_df.iloc[:, :-1] / y_regions_df["total"].values[:, None]
@@ -312,25 +306,24 @@ def show_structure(X: pd.DataFrame, y: pd.Series, output_dir: str, q: int = 6):
     with open(os.path.join(output_dir, "y_regions.txt"), "w") as f:
         f.write(y_regions_df.to_string())
 
-    tree, initial_mis = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
 
+def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n k"], y_numpy: Float[ND, "n"], output_dir: str, q: int) -> list[str]:
+    k = X.shape[1]
+    tree, initial_mis = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
     MIs = np.zeros((k, k))
     for (i, j), mi in initial_mis.items():
         MIs[i, j] = MIs[j, i] = mi
-
     leaf_names = get_leaf_names(tree)
     mi_df = pd.DataFrame(MIs, index=X.columns, columns=X.columns)
     mi_df_ordered = mi_df.loc[leaf_names, leaf_names]
-
-    logger.info(f"MI matrix computed")
+    logger.info("MI matrix computed")
     plt.figure(figsize=(16, 14))
     mask = mi_df_ordered < 2e-3
-    sns.heatmap(mi_df_ordered * 100, annot=True, fmt=".1f", cmap="viridis", mask=mask, square=True)
+    sns.heatmap(mi_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("MI Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "mi_matrix.png"))
     plt.close()
-
     synergies = np.zeros((k, k))
     redundancies = np.zeros((k, k))
     cut_small = lambda x: x if x > 5e-3 else 0
@@ -340,56 +333,89 @@ def show_structure(X: pd.DataFrame, y: pd.Series, output_dir: str, q: int = 6):
             total = max(pid_result.total, 0.05)
             synergies[i, j] = synergies[j, i] = cut_small(pid_result.synergy) / total
             redundancies[i, j] = redundancies[j, i] = cut_small(pid_result.redundancy) / total
-
     synergy_df = pd.DataFrame(synergies, index=X.columns, columns=X.columns)
     synergy_df_ordered = synergy_df.loc[leaf_names, leaf_names]
     logger.info("Synergy matrix computed")
     plt.figure(figsize=(16, 14))
     mask = synergy_df_ordered < 2e-3
-    sns.heatmap(synergy_df_ordered * 100, annot=True, fmt=".1f", cmap="viridis", mask=mask, square=True)
+    sns.heatmap(synergy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Synergy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "synergy_matrix.png"))
     plt.close()
-
     redundancy_df = pd.DataFrame(redundancies, index=X.columns, columns=X.columns)
     redundancy_df_ordered = redundancy_df.loc[leaf_names, leaf_names]
     logger.info("Redundancy matrix computed")
     plt.figure(figsize=(16, 14))
     mask = redundancy_df_ordered < 2e-3
-    sns.heatmap(redundancy_df_ordered * 100, annot=True, fmt=".1f", cmap="viridis", mask=mask, square=True)
+    sns.heatmap(redundancy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Redundancy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "redundancy_matrix.png"))
     plt.close()
-
     with open(os.path.join(output_dir, "mi_tree.txt"), "w") as f:
         f.write(str(tree))
-
     render_tree_interactive(tree, output_file=os.path.join(output_dir, "interactive_tree.html"))
+    return leaf_names
 
 
-def test_regional_mi():
-    N = 2000
-    x = np.random.randn(N)
-    y = np.sin(x * 3) + np.random.randn(N) * (np.abs(x) / 2 + 0.2)
-    os.makedirs("output", exist_ok=True)
-    plot_copula(x, y, q=8, output_file="output/regional_mi.png", x_name="x", y_name="y")
-    logger.info("Regional MI plot saved to output/regional_mi.png")
+def _perform_and_plot_factor_analysis(
+    X: pd.DataFrame,
+    X_numpy: Float[ND, "n k"],
+    y_numpy: Float[ND, "n"],
+    output_dir: str,
+    leaf_names: list[str] | None,
+):
+    k = X.shape[1]
+    logger.info("Performing factor analysis")
+    all_features_numpy = np.hstack([X_numpy, y_numpy.reshape(-1, 1)])
+    all_feature_names = list(X.columns) + ["target"]
+    X_scaled = StandardScaler().fit_transform(all_features_numpy)
+    fa_check = FactorAnalyzer(n_factors=k + 1, rotation=None)
+    with Silencer():
+        fa_check.fit(X_scaled)
+    ev, _ = fa_check.get_eigenvalues()
+    n_factors = sum(ev > 1)
+    if n_factors == 0:
+        n_factors = 1
+    fa = FactorAnalyzer(n_factors=n_factors, rotation="quartimin")
+    with Silencer():
+        fa.fit(X_scaled)
+    loadings = fa.loadings_
+    loadings_df = pd.DataFrame(loadings, index=all_feature_names, columns=[f"Factor {i + 1}" for i in range(n_factors)])
+    if leaf_names:
+        ordered_names = leaf_names + ["target"]
+        loadings_df = loadings_df.loc[ordered_names]
+    plt.figure(figsize=(8, 12))
+    sns.heatmap(loadings_df, annot=True, fmt=".2f", cmap="vlag", center=0.0)
+    plt.title("Factors")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, "factors.png"))
+    plt.close()
 
 
-def test_entropy():
-    N = 1000
-    X = pd.DataFrame(np.random.randn(N, 10), columns=[f"x{i}" for i in range(10)])
-    print(X.head())
-    y = X.sum(axis=1) * 0 + np.random.randn(N)
-    show_structure(X, y, "output")
+def show_structure(
+    X: pd.DataFrame,
+    y: pd.Series,
+    output_dir: str,
+    q: int = 6,
+    do_regional_mi: bool = True,
+    do_structure_matrices: bool = True,
+    do_factor_analysis: bool = True,
+):
+    X_numpy = X.to_numpy()
+    y_numpy = y.to_numpy()
+    leaf_names: list[str] | None = None
+    if do_regional_mi:
+        _compute_and_plot_copulas_and_regional_mi(X, y_numpy, output_dir)
+    if do_structure_matrices:
+        leaf_names = _compute_and_plot_structure_matrices(X, X_numpy, y_numpy, output_dir, q)
+    if do_factor_analysis:
+        _perform_and_plot_factor_analysis(X, X_numpy, y_numpy, output_dir, leaf_names)
 
 
 def test_pid():
     N = 1000
-    # np.random.seed(42)
-
     print("=== PID Tests ===\n")
     print("1. Independent coins:")
     a = np.random.binomial(
@@ -433,6 +459,4 @@ def test_pid():
 
 
 if __name__ == "__main__":
-    test_regional_mi()
-    # test_pid()
-    # test_entropy()
+    test_pid()
