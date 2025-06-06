@@ -101,7 +101,7 @@ def plot_copula(
     output_file: str | None = None,
     x_name: str = "x",
     y_name: str = "y",
-):
+) -> tuple[Float[ND, "q"], Float[ND, "q"]]:
     mi_per_x, mi_per_y = mi_quantile_regional(x, y, q)
     q_x = len(mi_per_x)
     q_y = len(mi_per_y)
@@ -145,6 +145,7 @@ def plot_copula(
         plt.close()
     else:
         plt.show()
+    return mi_per_x, mi_per_y
 
 
 @typed
@@ -276,17 +277,43 @@ def show_structure(X: pd.DataFrame, y: pd.Series, output_dir: str, q: int = 6):
 
     copulas_dir = os.path.join(output_dir, "copulas")
     os.makedirs(copulas_dir, exist_ok=True)
+    regional_q = 8
+    regional_mis_x, regional_mis_y = [], []
     for col in tqdm(X.columns, desc="Plotting copulas"):
-        plot_copula(
-            X[col].to_numpy(),
+        x_col = X[col].to_numpy()
+        mi_per_x, mi_per_y = plot_copula(
+            x_col,
             y_numpy,
-            q=8,
+            q=regional_q,
             output_file=os.path.join(copulas_dir, f"{col}.png"),
             x_name=col,
             y_name="target",
         )
 
+        padded_mi_x = np.zeros(regional_q)
+        padded_mi_x[: len(mi_per_x)] = mi_per_x
+        regional_mis_x.append(padded_mi_x)
+
+        padded_mi_y = np.zeros(regional_q)
+        padded_mi_y[: len(mi_per_y)] = mi_per_y
+        regional_mis_y.append(padded_mi_y)
+
+    x_regions_df = pd.DataFrame(regional_mis_x, index=X.columns, columns=[f"q{i}" for i in range(regional_q)])
+    x_regions_df["total"] = x_regions_df.mean(axis=1)
+    x_regions_df.iloc[:, :-1] = x_regions_df.iloc[:, :-1] / x_regions_df["total"].values[:, None]
+    x_regions_df = (100 * x_regions_df.sort_values("total", ascending=False)).round().astype(int)
+    with open(os.path.join(output_dir, "x_regions.txt"), "w") as f:
+        f.write(x_regions_df.to_string())
+
+    y_regions_df = pd.DataFrame(regional_mis_y, index=X.columns, columns=[f"q{i}" for i in range(regional_q)])
+    y_regions_df["total"] = y_regions_df.mean(axis=1)
+    y_regions_df.iloc[:, :-1] = y_regions_df.iloc[:, :-1] / y_regions_df["total"].values[:, None]
+    y_regions_df = (100 * y_regions_df.sort_values("total", ascending=False)).round().astype(int)
+    with open(os.path.join(output_dir, "y_regions.txt"), "w") as f:
+        f.write(y_regions_df.to_string())
+
     tree, initial_mis = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
+
     MIs = np.zeros((k, k))
     for (i, j), mi in initial_mis.items():
         MIs[i, j] = MIs[j, i] = mi
