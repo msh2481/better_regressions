@@ -185,4 +185,4 @@ def very_simple_test_structure():
 
 
 if __name__ == "__main__":
-    test_structure()
+    very_simple_test_structure()

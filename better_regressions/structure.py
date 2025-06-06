@@ -63,7 +63,7 @@ def entropy_quantile(x: Float[ND, "n"], q: int = 8) -> float:
 
 
 @typed
-def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
+def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8, norm: bool = False) -> float:
     """
     Computes normalized mutual information between x and y using bins found by KMeans.
     I(x, y) = H(x) + H(y) - H(x, y)
@@ -79,8 +79,10 @@ def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
     p_xy = np.clip(counts_xy / np.sum(counts_xy), EPS, 1)
     h_xy = -np.sum(p_xy * np.log2(p_xy))
 
-    mi = h_x + h_y - h_xy
-    return float(mi)
+    mi = max(float(h_x + h_y - h_xy), 0)
+    if norm:
+        mi /= min(h_x, h_y) + EPS
+    return mi
 
 
 @typed
@@ -127,10 +129,7 @@ def plot_copula(
     ax_hist_x = fig.add_subplot(gs[0, 0:4], sharex=ax_scatter)
     ax_hist_y = fig.add_subplot(gs[1:5, 4], sharey=ax_scatter)
 
-    kde = stats.gaussian_kde(np.vstack([x_ranked, y_ranked]))
-    xx, yy = np.mgrid[0:1:100j, 0:1:100j]
-    zz = kde(np.vstack([xx.ravel(), yy.ravel()]))
-    ax_scatter.contourf(xx, yy, zz.reshape(xx.shape), levels=15, cmap="Greys")
+    ax_scatter.scatter(x_ranked, y_ranked, alpha=0.5, s=1, rasterized=True)
     ax_scatter.set_xlabel(f"Rank of {x_name}")
     ax_scatter.set_ylabel(f"Rank of {y_name}")
     ax_scatter.set_xlim(0, 1)
@@ -177,31 +176,30 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
     for a_idx in a_unique:
         for b_idx in b_unique:
             mask = (a_indices == a_idx) & (b_indices == b_idx)
-            joint_preds[mask] = np.mean(y[mask])
+            if np.sum(mask) > 0:
+                joint_preds[mask] = np.mean(y[mask])
 
     h_y = entropy_quantile(y, q)
     mi_a = mi_quantile(a, y, q) / h_y
     mi_b = mi_quantile(b, y, q) / h_y
     mi_linear = mi_quantile(linear_preds, y, q) / h_y
     mi_joint = mi_quantile(joint_preds, y, q) / h_y
-
-    print(mi_quantile(linear_preds, y, q))
-
     return InfoDecomposition(mi_joint=mi_joint, mi_linear=mi_linear, mi_a=mi_a, mi_b=mi_b)
 
 
 @typed
 def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> tuple[MITree, dict[tuple[int, int], float]]:
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
-        model = BinnedRegression(X_bins=q, y_bins=q, mode="concat")
+        model = Scaler(Linear(alpha=1e-9))
         X = np.column_stack([xi, xj])
         return cross_val_predict(model, X, y, cv=3, method="predict")
 
     n, k_initial = X.shape
+    h_y = entropy_quantile(y, q)
     MIs_to_return: dict[tuple[int, int], float] = {}
     for i in range(k_initial):
         for j in range(i + 1, k_initial):
-            mi = mi_quantile(X[:, i], X[:, j], q)
+            mi = mi_quantile(X[:, i], X[:, j], q, norm=True)
             MIs_to_return[(i, j)] = mi
 
     MIs = MIs_to_return.copy()
@@ -211,7 +209,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         names = [f"x{i}" for i in range(k_initial)]
     trees = [
         MITree(
-            mi_target=mi_quantile(X[:, i], y, q),
+            mi_target=mi_quantile(X[:, i], y, q) / h_y,
             name=names[i],
         )
         for i in range(k_initial)
@@ -230,7 +228,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         assert len(trees) == k_new
         trees.append(
             MITree(
-                mi_target=mi_quantile(merged, y, q),
+                mi_target=mi_quantile(merged, y, q) / h_y,
                 mi_join=MIs[(merge_i, merge_j)],
                 decomp=pid,
                 left=trees[merge_i],
@@ -245,7 +243,7 @@ def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: lis
         for i in active:
             MIs.pop((min(i, merge_i), max(i, merge_i)), None)
             MIs.pop((min(i, merge_j), max(i, merge_j)), None)
-            MIs[(i, k_new)] = mi_quantile(X[:, i], X[:, k_new], q)
+            MIs[(i, k_new)] = mi_quantile(X[:, i], X[:, k_new], q, norm=True)
         active.add(k_new)
 
     return trees[-1], MIs_to_return
@@ -418,11 +416,6 @@ def test_mi_quantile():
     a = a.astype(float)
     b = b.astype(float)
     y = y.astype(float)
-    print(a[:10])
-    print(b[:10])
-    print(y[:10])
-    print(mi_quantile(a, y))
-    print(mi_quantile(b, y))
 
 
 def test_pid():
