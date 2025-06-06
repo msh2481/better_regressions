@@ -11,12 +11,12 @@ from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from numpy import ndarray as ND
 from scipy import stats
+from sklearn.cluster import KMeans
 from sklearn.feature_selection import mutual_info_regression
-from sklearn.model_selection import cross_val_predict
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import KFold
 from tqdm import tqdm
 
-from better_regressions import Silencer, binning_regressor
+from better_regressions import Silencer
 from better_regressions.tree_rendering import MITree, PIDResult, render_tree_interactive
 
 EPS = 1e-12
@@ -30,46 +30,52 @@ def mi_knn(x: Float[ND, "n"], y: Float[ND, "n"]) -> float:
 
 
 @typed
-def joint_entropy_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
-    x_edges = quantile_bins(x, q)
-    y_edges = quantile_bins(y, q)
-    counts, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
-    probabilities = counts.flatten() / np.sum(counts)
-    return -np.sum(probabilities * np.log2(probabilities + EPS))
-
-
-@typed
 def mi_quantile(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> float:
     """
+    Computes normalized mutual information between x and y using bins found by KMeans.
     I(x, y) = H(x) + H(y) - H(x, y)
-    H(x) = H(y) = log(q)
-    log(q) <= I(x, y) <= 2 * log(q)
+    Result is normalized by min(H(x), H(y)).
     """
-    logq = np.log2(q)
-    mi = np.clip((2 * logq - joint_entropy_quantile(x, y, q)) / logq, 0, 1)
-    return mi
+    x_edges = quantile_bins(x, q)
+    y_edges = quantile_bins(y, q)
+
+    # H(x)
+    p_x, _ = np.histogram(x, bins=x_edges)
+    p_x = np.clip(p_x / np.sum(p_x), EPS, 1)
+    h_x = -np.sum(p_x * np.log2(p_x))
+
+    # H(y)
+    p_y_counts, _ = np.histogram(y, bins=y_edges)
+    p_y = p_y_counts / np.sum(p_y_counts)
+    h_y = -np.sum(p_y * np.log2(p_y + EPS))
+
+    # H(x, y)
+    counts_xy, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
+    p_xy = np.clip(counts_xy / np.sum(counts_xy), EPS, 1)
+    h_xy = -np.sum(p_xy * np.log2(p_xy))
+
+    mi = h_x + h_y - h_xy
+    return float(np.clip(mi / (min(h_x, h_y) + EPS), 0, 1))
 
 
 @typed
 def quantile_bins(x: Float[ND, "n"], q: int) -> Float[ND, "qp1"]:
-    quantiles = np.linspace(0, 1, q + 1)
-    edges = np.quantile(x, quantiles)
-    rng = edges[-1] - edges[0] + 1e-9
-    min_diff = 1e-3 * (rng / q)
-    edges[:-1] -= min_diff / 2
-    edges[-1] += min_diff / 2
-    while True:
-        changed = False
-        for i in range(len(edges) - 1):
-            cur_diff = edges[i + 1] - edges[i]
-            if cur_diff < min_diff:
-                edges = np.delete(edges, i + 1)
-                changed = True
-                break
-        if not changed:
-            break
-    while len(edges) < q + 1:
-        edges = np.concatenate([edges, [edges[-1] + min_diff]])
+    # Using KMeans++ to find centroids for binning
+    with Silencer():  # KMeans can be verbose with convergence warnings
+        kmeans = KMeans(n_clusters=q, init="k-means++", n_init="auto", random_state=42)
+        kmeans.fit(x.reshape(-1, 1))
+    centroids = np.sort(kmeans.cluster_centers_.flatten())
+    prev_centroids = np.roll(centroids, 1)
+    rng = np.quantile(x, 0.98) - np.quantile(x, 0.02)
+    mask = np.abs(centroids - prev_centroids) < 1e-9 * rng
+    centroids[mask] = np.inf
+    centroids = np.sort(centroids)
+
+    # Compute edges as midpoints between centroids
+    edges = np.zeros(q + 1)
+    edges[1:-1] = (centroids[:-1] + centroids[1:]) / 2
+    edges[0] = -np.inf
+    edges[-1] = np.inf
     return edges
 
 
@@ -77,21 +83,20 @@ def quantile_bins(x: Float[ND, "n"], q: int) -> Float[ND, "qp1"]:
 def mi_quantile_regional(x: Float[ND, "n"], y: Float[ND, "n"], q: int = 8) -> tuple[Float[ND, "q"], Float[ND, "q"]]:
     x_edges = quantile_bins(x, q)
     y_edges = quantile_bins(y, q)
-    q_x = len(x_edges) - 1
-    q_y = len(y_edges) - 1
     p_xy, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
     p_x, _ = np.histogram(x, bins=x_edges)
     p_y, _ = np.histogram(y, bins=y_edges)
-    LAPLACE = 1e-6
-    p_xy = (p_xy + LAPLACE) / (len(y) + LAPLACE * q_x * q_y)
-    p_x = (p_x + LAPLACE) / (len(y) + LAPLACE * q_x)
-    p_y = (p_y + LAPLACE) / (len(y) + LAPLACE * q_y)
+
+    p_xy = np.clip(p_xy / len(y), EPS, 1)
+    p_x = np.clip(p_x / len(y), EPS, 1)
+    p_y = np.clip(p_y / len(y), EPS, 1)
+
     # mi per y quantile
-    p_x_given_y = p_xy.T / (p_y[:, None] + EPS)
-    mi_per_y = np.sum(p_x_given_y * np.log2(p_x_given_y / (p_x[None, :] + EPS) + EPS), axis=1)
+    p_x_given_y = p_xy.T / p_y[:, None]
+    mi_per_y = np.sum(p_x_given_y * np.log2(p_x_given_y / p_x[None, :]), axis=1)
     # mi per x quantile
-    p_y_given_x = p_xy / (p_x[:, None] + EPS)
-    mi_per_x = np.sum(p_y_given_x * np.log2(p_y_given_x / (p_y[None, :] + EPS) + EPS), axis=1)
+    p_y_given_x = p_xy / p_x[:, None]
+    mi_per_x = np.sum(p_y_given_x * np.log2(p_y_given_x / p_y[None, :]), axis=1)
     return mi_per_x, mi_per_y
 
 
@@ -152,6 +157,7 @@ def plot_copula(
 
 @typed
 def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int = 6) -> PIDResult:
+    np.set_printoptions(formatter={"float_kind": lambda x: f"{x:.5f}"})
     y_edges = quantile_bins(y, q)
     a_edges = quantile_bins(a, q)
     b_edges = quantile_bins(b, q)
@@ -164,27 +170,29 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
     p_a, _ = np.histogram(a, bins=a_edges)
     p_b, _ = np.histogram(b, bins=b_edges)
 
-    LAPLACE = 1e-6
-    p_ya = (p_ya + LAPLACE) / (len(y) + LAPLACE * q * q)
-    p_yb = (p_yb + LAPLACE) / (len(y) + LAPLACE * q * q)
-    p_yab = (p_yab + LAPLACE) / (len(y) + LAPLACE * q * q * q)
-    p_y = (p_y + LAPLACE) / (len(y) + LAPLACE * q)
-    p_a = (p_a + LAPLACE) / (len(y) + LAPLACE * q)
-    p_b = (p_b + LAPLACE) / (len(y) + LAPLACE * q)
+    p_ya = np.clip(p_ya / len(y), EPS, 1)
+    p_yb = np.clip(p_yb / len(y), EPS, 1)
+    p_yab = np.clip(p_yab / len(y), EPS, 1)
+    p_y = np.clip(p_y / len(y), EPS, 1)
+    p_a = np.clip(p_a / len(y), EPS, 1)
+    p_b = np.clip(p_b / len(y), EPS, 1)
 
-    p_a_given_y = p_ya / (p_y[:, None] + EPS)
-    p_b_given_y = p_yb / (p_y[:, None] + EPS)
+    p_a_given_y = p_ya / p_y[:, None]
+    p_b_given_y = p_yb / p_y[:, None]
 
-    pmi_a_per_y = np.sum(p_a_given_y * np.log2(p_a_given_y / (p_a + EPS) + EPS), axis=1)
-    pmi_b_per_y = np.sum(p_b_given_y * np.log2(p_b_given_y / (p_b + EPS) + EPS), axis=1)
+    pmi_a_per_y = np.sum(p_a_given_y * np.log2(p_a_given_y / p_a[None, :]), axis=1)
+    pmi_b_per_y = np.sum(p_b_given_y * np.log2(p_b_given_y / p_b[None, :]), axis=1)
+
+    print(pmi_a_per_y)
+    print(pmi_b_per_y)
 
     redundancy = np.sum(p_y * np.minimum(pmi_a_per_y, pmi_b_per_y))
     unique_a = np.sum(p_y * (pmi_a_per_y - np.minimum(pmi_a_per_y, pmi_b_per_y)))
     unique_b = np.sum(p_y * (pmi_b_per_y - np.minimum(pmi_a_per_y, pmi_b_per_y)))
 
     p_ab = np.sum(p_yab, axis=0)
-    p_y_given_ab = p_yab / (p_ab + EPS)
-    total = np.sum(p_yab * np.log2(p_y_given_ab / (p_y + EPS) + EPS))
+    p_y_given_ab = p_yab / p_ab[None, :, :]
+    total = np.sum(p_yab * np.log2(p_y_given_ab / p_y[:, None, None]))
 
     synergy = total - (unique_a + unique_b + redundancy)
 
@@ -201,11 +209,26 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
 @typed
 def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> tuple[MITree, dict[tuple[int, int], float]]:
     def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
-        binning_model = binning_regressor(X_bins=q, y_bins=q)
-        X_stack = np.column_stack([xi, xj])
-        binning_predictions = cross_val_predict(binning_model, X_stack, y, cv=3, n_jobs=3)
-        assert binning_predictions.shape == y.shape
-        return binning_predictions
+        predictions = np.zeros_like(y)
+        xi_edges = quantile_bins(xi, q)
+        xj_edges = quantile_bins(xj, q)
+        num_bins_i = len(xi_edges) - 1
+        num_bins_j = len(xj_edges) - 1
+        # Use KFold for cross-validation to prevent data leakage
+        kf = KFold(n_splits=3, shuffle=True, random_state=42)
+        for train_index, test_index in kf.split(xi):
+            xi_train, xi_test = xi[train_index], xi[test_index]
+            xj_train, xj_test = xj[train_index], xj[test_index]
+            y_train = y[train_index]
+            cell_means, _, _, _ = stats.binned_statistic_2d(xi_train, xj_train, y_train, statistic="median", bins=[xi_edges, xj_edges])
+            cell_means = np.nan_to_num(cell_means, nan=np.median(y_train))
+
+            xi_test_binned = np.digitize(xi_test, xi_edges) - 1
+            xj_test_binned = np.digitize(xj_test, xj_edges) - 1
+            xi_test_binned = np.clip(xi_test_binned, 0, num_bins_i - 1)
+            xj_test_binned = np.clip(xj_test_binned, 0, num_bins_j - 1)
+            predictions[test_index] = cell_means[xi_test_binned, xj_test_binned]
+        return predictions
 
     n, k_initial = X.shape
     MIs_to_return: dict[tuple[int, int], float] = {}
@@ -416,47 +439,71 @@ def show_structure(
 
 
 def test_pid():
-    N = 1000
+    N = 10**6
     print("=== PID Tests ===\n")
-    print("1. Independent coins:")
-    a = np.random.binomial(
-        1,
-        0.5,
-        N,
-    ).astype(float)
-    b = np.random.binomial(1, 0.5, N).astype(float)
-    y = np.random.binomial(1, 0.5, N).astype(float)
-    result = pid_quantile(y, a, b)
+    # print("1. Independent coins:")
+    # a = np.random.binomial(
+    #     1,
+    #     0.5,
+    #     N,
+    # ).astype(float)
+    # b = np.random.binomial(1, 0.5, N).astype(float)
+    # y = np.random.binomial(1, 0.5, N).astype(float)
+    # result = pid_quantile(y, a, b)
+    # print(f"   Redundancy: {result.redundancy:.4f}")
+    # print(f"   Unique A:   {result.unique_a:.4f}")
+    # print(f"   Unique B:   {result.unique_b:.4f}")
+    # print(f"   Synergy:    {result.synergy:.4f}")
+    # print(f"   Total:      {result.total:.4f}")
+    # print()
+    # print("2. Y = A XOR B (synergy):")
+    # a = np.random.binomial(1, 0.5, N).astype(float)
+    # b = np.random.binomial(1, 0.5, N).astype(float)
+    # y = (a.astype(int) ^ b.astype(int)).astype(float)
+    # result = pid_quantile(y, a, b)
+    # print(f"   Redundancy: {result.redundancy:.4f}")
+    # print(f"   Unique A:   {result.unique_a:.4f}")
+    # print(f"   Unique B:   {result.unique_b:.4f}")
+    # print(f"   Synergy:    {result.synergy:.4f}")
+    # print(f"   Total:      {result.total:.4f}")
+    # print()
+    # print("3. A = Y + noise, B = Y + noise (redundancy):")
+    # y = np.random.binomial(1, 0.5, N).astype(float)
+    # noise_a = np.random.binomial(1, 0.1, N).astype(float)
+    # noise_b = np.random.binomial(1, 0.1, N).astype(float)
+    # a = (y.astype(int) ^ noise_a.astype(int)).astype(float)
+    # b = (y.astype(int) ^ noise_b.astype(int)).astype(float)
+    # result = pid_quantile(y, a, b)
+    # print(f"   Redundancy: {result.redundancy:.4f}")
+    # print(f"   Unique A:   {result.unique_a:.4f}")
+    # print(f"   Unique B:   {result.unique_b:.4f}")
+    # print(f"   Synergy:    {result.synergy:.4f}")
+    # print(f"   Total:      {result.total:.4f}")
+    # print()
+    # print("4. Linear relationship:")
+    # a = np.random.randn(N)
+    # b = np.random.randn(N)
+    # y = a + b
+    # result = pid_quantile(y, a, b)
+    # print(f"   Redundancy: {result.redundancy:.4f}")
+    # print(f"   Unique A:   {result.unique_a:.4f}")
+    # print(f"   Unique B:   {result.unique_b:.4f}")
+    # print(f"   Synergy:    {result.synergy:.4f}")
+    # print(f"   Total:      {result.total:.4f}")
+    # print()
+    print("5. Complete separation:")
+    a = np.random.randint(0, 2, N)
+    b = np.random.randint(0, 2, N)
+    y = 2 * a + b
+    a = a.astype(float)
+    b = b.astype(float)
+    y = y.astype(float)
+    result = pid_quantile(y, a, b, q=4)
     print(f"   Redundancy: {result.redundancy:.4f}")
     print(f"   Unique A:   {result.unique_a:.4f}")
     print(f"   Unique B:   {result.unique_b:.4f}")
     print(f"   Synergy:    {result.synergy:.4f}")
     print(f"   Total:      {result.total:.4f}")
-    print()
-    print("2. Y = A XOR B (synergy):")
-    a = np.random.binomial(1, 0.5, N).astype(float)
-    b = np.random.binomial(1, 0.5, N).astype(float)
-    y = (a.astype(int) ^ b.astype(int)).astype(float)
-    result = pid_quantile(y, a, b)
-    print(f"   Redundancy: {result.redundancy:.4f}")
-    print(f"   Unique A:   {result.unique_a:.4f}")
-    print(f"   Unique B:   {result.unique_b:.4f}")
-    print(f"   Synergy:    {result.synergy:.4f}")
-    print(f"   Total:      {result.total:.4f}")
-    print()
-    print("3. A = Y + noise, B = Y + noise (redundancy):")
-    y = np.random.binomial(1, 0.5, N).astype(float)
-    noise_a = np.random.binomial(1, 0.1, N).astype(float)
-    noise_b = np.random.binomial(1, 0.1, N).astype(float)
-    a = (y.astype(int) ^ noise_a.astype(int)).astype(float)
-    b = (y.astype(int) ^ noise_b.astype(int)).astype(float)
-    result = pid_quantile(y, a, b)
-    print(f"   Redundancy: {result.redundancy:.4f}")
-    print(f"   Unique A:   {result.unique_a:.4f}")
-    print(f"   Unique B:   {result.unique_b:.4f}")
-    print(f"   Synergy:    {result.synergy:.4f}")
-    print(f"   Total:      {result.total:.4f}")
-    print()
 
 
 if __name__ == "__main__":

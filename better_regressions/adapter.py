@@ -1,14 +1,18 @@
 import numpy as np
 from beartype import beartype as typed
 from jaxtyping import Float, Int
+from loguru import logger
 from matplotlib import pyplot as plt
 from numpy import ndarray as ND
 from sklearn import clone
 from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 from better_regressions.utils import Silencer
+
+INF = 1e100
 
 
 class QuantileBinner(BaseEstimator, TransformerMixin):
@@ -16,27 +20,31 @@ class QuantileBinner(BaseEstimator, TransformerMixin):
         self.n_bins = n_bins
         self.one_hot = one_hot
 
+    def _fit_1d(self, x_1d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        with Silencer():
+            kmeans = KMeans(n_clusters=self.n_bins, init="k-means++", n_init="auto", random_state=42)
+            kmeans.fit(x_1d.reshape(-1, 1))
+        centroids = np.sort(kmeans.cluster_centers_.flatten())
+        prev_centroids = np.roll(centroids, 1)
+        rng = np.quantile(x_1d, 0.98) - np.quantile(x_1d, 0.02)
+        mask = np.abs(centroids - prev_centroids) < 1e-9 * rng
+        centroids = np.delete(centroids, mask)
+
+        # Compute edges as midpoints between centroids
+        edges = np.zeros(len(centroids) + 1)
+        edges[1:-1] = (centroids[:-1] + centroids[1:]) / 2
+        edges[0] = x_1d.min()
+        edges[-1] = x_1d.max()
+        return centroids, edges
+
     def fit(self, X, y=None):
         X_arr = np.asarray(X)
-        if self.n_bins > 0:
+        if self.n_bins > 1:
             assert self.n_bins > 1, "n_bins must be greater than 1 (or 0 for no binning)"
-            eps = 1 / (2 * self.n_bins)
-            qs = np.linspace(eps, 1 - eps, self.n_bins, endpoint=True)
             if X_arr.ndim == 1:
-                centers = np.quantile(X_arr, qs)
-                edges = np.zeros(self.n_bins + 1)
-                edges[0] = np.min(X_arr)
-                edges[-1] = np.max(X_arr)
-                edges[1:-1] = (centers[:-1] + centers[1:]) / 2
-            elif X_arr.ndim == 2:
-                centers = np.quantile(X_arr, qs, axis=0)
-                n_features = X_arr.shape[1]
-                edges = np.zeros((self.n_bins + 1, n_features))
-                edges[0, :] = np.min(X_arr, axis=0)
-                edges[-1, :] = np.max(X_arr, axis=0)
-                edges[1:-1, :] = (centers[:-1, :] + centers[1:, :]) / 2
+                centers, edges = self._fit_1d(X_arr)
             else:
-                raise ValueError(f"X must be 1D or 2D array, got ndim={X_arr.ndim}")
+                raise ValueError(f"X must be 1D, got ndim={X_arr.ndim}")
             self.bin_centers_ = centers
             self.bin_edges_ = edges
             self.bin_sizes_ = self.bin_edges_[1:] - self.bin_edges_[:-1]
@@ -51,12 +59,8 @@ class QuantileBinner(BaseEstimator, TransformerMixin):
         if X_arr.ndim == 1:
             dist = np.abs(X_arr[:, None] - self.bin_centers_)
             bin_indices = np.argmin(dist, axis=1)
-        elif X_arr.ndim == 2:
-            # distances: (n_samples, n_bins, n_features)
-            dist = np.abs(X_arr[:, None, :] - self.bin_centers_[None, :, :])
-            bin_indices = np.argmin(dist, axis=1)
         else:
-            raise ValueError(f"X must be 1D or 2D array, got ndim={X_arr.ndim}")
+            raise ValueError(f"X must be 1D array, got ndim={X_arr.ndim}")
         if self.one_hot:
             if X_arr.ndim == 1:
                 return np.eye(self.n_bins)[bin_indices]
@@ -67,10 +71,13 @@ class QuantileBinner(BaseEstimator, TransformerMixin):
 
 
 class Adapter(BaseEstimator, TransformerMixin):
-    def __init__(self, classifier: BaseEstimator, X_bins: int = 10, y_bins: int = 10):
+    def __init__(self, classifier: BaseEstimator, X_bins: int = 10, y_bins: int = 10, mode: str = "concat"):
         self.X_bins = X_bins
         self.y_bins = y_bins
         self.classifier = classifier
+        if mode not in ["concat", "outer"]:
+            raise ValueError("mode must be 'concat' or 'outer'")
+        self.mode = mode
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"] = None):
@@ -105,13 +112,27 @@ class Adapter(BaseEstimator, TransformerMixin):
 
     @typed
     def _transform_X(self, X: Float[ND, "n_samples n_featueres"]) -> Float[ND, "n_samples n_bins"]:
-        X_binned = np.concatenate([self.X_binners_[i].transform(X[:, i]) for i in range(X.shape[1])], axis=1)
-        return X_binned
+        if X.shape[1] == 0:
+            return np.ones((X.shape[0], 1)) if self.mode == "outer" else np.empty((X.shape[0], 0))
+        binned_features = [self.X_binners_[i].transform(X[:, i]) for i in range(X.shape[1])]
+        if self.mode == "concat":
+            return np.concatenate(binned_features, axis=1)
+        elif self.mode == "outer":
+            outer_prod = binned_features[0]
+            for i in range(1, len(binned_features)):
+                outer_prod = outer_prod[:, :, None] * binned_features[i][:, None, :]
+                new_shape = (X.shape[0], -1)
+                outer_prod = outer_prod.reshape(new_shape)
+            return outer_prod
+        else:
+            raise ValueError(f"Invalid mode: {self.mode}")
 
     @typed
     def predict_proba(self, X: Float[ND, "n_samples n_featueres"]) -> Float[ND, "n_samples n_bins"]:
         X_binned = self._transform_X(X)
-        return self.classifier_.predict_proba(X_binned)
+        full_results = self.classifier_.predict_proba(X_binned)
+        actual_y_bins = len(self.y_binner_.bin_centers_)
+        return full_results[:, :actual_y_bins]
 
     @typed
     def predict(self, X: Float[ND, "n_samples n_featueres"]) -> Float[ND, "n_samples"]:
@@ -145,15 +166,18 @@ class Adapter(BaseEstimator, TransformerMixin):
 
 
 class AutoAdapter(BaseEstimator, TransformerMixin):
-    def __init__(self, classifier: BaseEstimator):
+    def __init__(self, classifier: BaseEstimator, mode: str = "concat"):
         self.classifier = classifier
+        if mode not in ["concat", "outer"]:
+            raise ValueError("mode must be 'concat' or 'outer'")
+        self.mode = mode
 
     @typed
     def fit(self, X: Float[ND, "n_samples n_features"], y: Float[ND, "n_samples"] = None, show_plot: bool = False):
         X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.5)
 
         def test_bin_count(k: int) -> float:
-            adapter = Adapter(self.classifier, X_bins=k, y_bins=k)
+            adapter = Adapter(self.classifier, X_bins=k, y_bins=k, mode=self.mode)
             adapter.fit(X_train, y_train)
             return adapter.logpdf(X_val, y_val)
 
@@ -164,7 +188,7 @@ class AutoAdapter(BaseEstimator, TransformerMixin):
             plt.show()
         idx = np.argmax(scores)
         k = int(1.5 * candidates[idx])
-        self.adapter_ = Adapter(self.classifier, X_bins=k, y_bins=k)
+        self.adapter_ = Adapter(self.classifier, X_bins=k, y_bins=k, mode=self.mode)
         self.adapter_.fit(X, y)
         return self
 
@@ -185,14 +209,14 @@ class AutoAdapter(BaseEstimator, TransformerMixin):
         return self.adapter_.sample(X)
 
 
-def binning_regressor(X_bins: int | None = None, y_bins: int | None = None):
+def binning_regressor(X_bins: int | None = None, y_bins: int | None = None, mode: str = "concat"):
     if (X_bins is None) != (y_bins is None):
         raise ValueError("X_bins and y_bins must both be None (for automatic selection) or both be an integer")
     inner = LogisticRegression(C=1e6)
     if X_bins is None or y_bins is None:
-        model = AutoAdapter(inner)
+        model = AutoAdapter(inner, mode=mode)
     else:
-        model = Adapter(inner, X_bins=X_bins, y_bins=y_bins)
+        model = Adapter(inner, X_bins=X_bins, y_bins=y_bins, mode=mode)
     return model
 
 
