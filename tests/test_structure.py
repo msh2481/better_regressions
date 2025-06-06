@@ -56,12 +56,11 @@ def generate_trading_like_data(n_samples=5000, random_state=42):
     features = {}
     # Linear combinations (what standard factor analysis finds)
     features["momentum_pure"] = momentum_factor + 0.1 * np.random.randn(n_samples)
-    features["momentum_mixed"] = 0.7 * momentum_factor + 0.3 * market_factor + 0.1 * np.random.randn(n_samples)
+    # features["momentum_mixed"] = 0.7 * momentum_factor + 0.3 * market_factor + 0.1 * np.random.randn(n_samples)
     features["value_pure"] = value_factor + 0.1 * np.random.randn(n_samples)
-    features["value_quality_mix"] = 0.6 * value_factor + 0.4 * quality_factor + 0.1 * np.random.randn(n_samples)
+    # features["value_quality_mix"] = 0.6 * value_factor + 0.4 * quality_factor + 0.1 * np.random.randn(n_samples)
     # Non-linear transformations (challenging for factor analysis, good for MI)
     features["volatility_squared"] = volatility_factor**2 + 0.5 * np.random.randn(n_samples)
-    features["volatility_log"] = np.log(volatility_factor + 1) + 0.1 * np.random.randn(n_samples)
     features["momentum_tanh"] = np.tanh(2 * momentum_factor) + 0.1 * np.random.randn(n_samples)
     features["size_sqrt"] = np.sqrt(size_factor) + 0.1 * np.random.randn(n_samples)
     # Interaction terms (factor analysis struggles, MI captures)
@@ -73,19 +72,6 @@ def generate_trading_like_data(n_samples=5000, random_state=42):
     # Complex non-monotonic relationships
     features["market_sine"] = np.sin(2 * market_factor) + 0.1 * np.random.randn(n_samples)
     features["value_polynomial"] = value_factor - 0.5 * value_factor**2 + 0.1 * value_factor**3 + 0.1 * np.random.randn(n_samples)
-    # Correlated noise (should be filtered out)
-    noise_base = np.random.randn(n_samples)
-    features["noise_1"] = noise_base + 0.5 * np.random.randn(n_samples)
-    features["noise_2"] = 0.8 * noise_base + 0.6 * np.random.randn(n_samples)
-    features["noise_3"] = -0.7 * noise_base + 0.7 * np.random.randn(n_samples)
-    # Pure independent noise
-    features["pure_noise_1"] = np.random.randn(n_samples)
-    features["pure_noise_2"] = np.random.exponential(1, n_samples)
-    features["pure_noise_3"] = np.random.uniform(-2, 2, n_samples)
-
-    # Redundant features (high MI with existing features)
-    features["momentum_redundant"] = features["momentum_pure"] + 0.05 * np.random.randn(n_samples)
-    features["volatility_redundant"] = 2 * features["volatility_squared"] + 1 + 0.1 * np.random.randn(n_samples)
 
     target = (
         # Linear effects
@@ -110,13 +96,13 @@ def generate_trading_like_data(n_samples=5000, random_state=42):
     )
     df = pd.DataFrame(features)
     df["target"] = target
-    # Add hidden factors for validation (prefix with _ to indicate they're hidden)
-    df["_factor_market"] = market_factor
-    df["_factor_momentum"] = momentum_factor
-    df["_factor_volatility"] = volatility_factor
-    df["_factor_value"] = value_factor
-    df["_factor_size"] = size_factor
-    df["_factor_quality"] = quality_factor
+    # # Add hidden factors for validation (prefix with _ to indicate they're hidden)
+    # df["_factor_market"] = market_factor
+    # df["_factor_momentum"] = momentum_factor
+    # df["_factor_volatility"] = volatility_factor
+    # df["_factor_value"] = value_factor
+    # df["_factor_size"] = size_factor
+    # df["_factor_quality"] = quality_factor
     # Reorder columns
     feature_cols = [col for col in df.columns if not col.startswith("_") and col != "target"]
     hidden_cols = [col for col in df.columns if col.startswith("_")]
@@ -185,4 +171,4 @@ def very_simple_test_structure():
 
 
 if __name__ == "__main__":
-    test_structure()
+    simple_test_structure()

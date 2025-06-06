@@ -1,4 +1,5 @@
 import os
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -183,81 +184,6 @@ def pid_quantile(y: Float[ND, "n"], a: Float[ND, "n"], b: Float[ND, "n"], q: int
     return InfoDecomposition(mi_joint=mi_joint, mi_linear=mi_linear, mi_a=mi_a, mi_b=mi_b)
 
 
-@typed
-def build_mi_tree(X: Float[ND, "n k"], y: Float[ND, "n"], q: int = 6, names: list[str] | None = None) -> MITree:
-    def merge(xi: Float[ND, "n"], xj: Float[ND, "n"]) -> Float[ND, "n"]:
-        model = Scaler(Linear(alpha=1e-9))
-        X = np.column_stack([xi, xj])
-        model.fit(X, y)
-        return model.predict(X)
-
-    n, k_initial = X.shape
-    h_y = entropy_quantile(y, q)
-    scores: dict[tuple[int, int], float] = {}
-    for i in tqdm(range(k_initial), desc="Computing initial scores"):
-        for j in range(i + 1, k_initial):
-            mi = mi_quantile(X[:, i], X[:, j], q, norm=True)
-            pid = pid_quantile(y, X[:, i], X[:, j], q)
-            scores[(i, j)] = mi + pid.synergy
-
-    active = set(range(k_initial))
-    if names is None:
-        names = [f"x{i}" for i in range(k_initial)]
-    trees = [
-        MITree(
-            mi_target=mi_quantile(X[:, i], y, q) / h_y,
-            name=names[i],
-        )
-        for i in range(k_initial)
-    ]
-    for _ in tqdm(range(k_initial - 1), desc="Building MI tree"):
-        to_sort = [(mi, i, j) for (i, j), mi in scores.items() if i in active and j in active]
-        to_sort.sort(key=lambda x: x[0], reverse=True)
-
-        _, u, v = to_sort[0]
-        merge_i, merge_j = min(u, v), max(u, v)
-
-        merged = merge(X[:, merge_i], X[:, merge_j])
-        pid = pid_quantile(y, X[:, merge_i], X[:, merge_j], q)
-        k_new = X.shape[1]
-
-        assert len(trees) == k_new
-        trees.append(
-            MITree(
-                mi_target=mi_quantile(merged, y, q) / h_y,
-                mi_join=mi_quantile(X[:, merge_i], X[:, merge_j], q, norm=True),
-                decomp=pid,
-                left=trees[merge_i],
-                right=trees[merge_j],
-            )
-        )
-
-        active.remove(merge_i)
-        active.remove(merge_j)
-        X = np.hstack([X, merged[:, None]])
-        scores.pop((merge_i, merge_j))
-        for i in active:
-            scores.pop((min(i, merge_i), max(i, merge_i)), None)
-            scores.pop((min(i, merge_j), max(i, merge_j)), None)
-            mi = mi_quantile(X[:, i], X[:, k_new], q, norm=True)
-            pid = pid_quantile(y, X[:, i], X[:, k_new], q)
-            scores[(i, k_new)] = mi + pid.synergy
-        active.add(k_new)
-
-    return trees[-1]
-
-
-def get_leaf_names(tree: MITree) -> list[str]:
-    if tree.left is None and tree.right is None:
-        return [tree.name]
-    leaf_names = []
-    if tree.left:
-        leaf_names.extend(get_leaf_names(tree.left))
-    if tree.right:
-        leaf_names.extend(get_leaf_names(tree.right))
-    return leaf_names
-
-
 def _compute_and_plot_copulas_and_regional_mi(X: pd.DataFrame, y_numpy: Float[ND, "n"], output_dir: str):
     copulas_dir = os.path.join(output_dir, "copulas")
     os.makedirs(copulas_dir, exist_ok=True)
@@ -293,62 +219,78 @@ def _compute_and_plot_copulas_and_regional_mi(X: pd.DataFrame, y_numpy: Float[ND
         f.write(y_regions_df.to_string())
 
 
-def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n k"], y_numpy: Float[ND, "n"], output_dir: str, q: int) -> list[str]:
+def get_ordering(M: np.ndarray, S: np.ndarray) -> list[int]:
+    score = M + S
+    np.fill_diagonal(score, -np.inf)
+    num_leaves = score.shape[0]
+    nodes = [(i, None, None) for i in range(num_leaves)]
+    for _ in range(num_leaves - 1):
+        i, j = np.unravel_index(np.argmax(score), score.shape)
+        new_node = (len(nodes), nodes[i], nodes[j])
+        nodes.append(new_node)
+        new_scores = (score[i, :] + score[j, :]) / 2.0
+        score = np.vstack([score, new_scores])
+        new_col = np.append(new_scores, -np.inf)
+        score = np.hstack([score, new_col[:, np.newaxis]])
+        score[[i, j], :] = -np.inf
+        score[:, [i, j]] = -np.inf
+
+    def dfs(node: tuple[int, tuple | None, tuple | None], acc: list[int]):
+        if node[1] is None and node[2] is None:
+            acc.append(node[0])
+        else:
+            dfs(node[1], acc)
+            dfs(node[2], acc)
+
+    ordering = []
+    dfs(nodes[-1], ordering)
+    print(ordering)
+    return ordering
+
+
+def _compute_and_plot_structure_matrices(X: pd.DataFrame, X_numpy: Float[ND, "n k"], y_numpy: Float[ND, "n"], output_dir: str, q: int):
     k = X.shape[1]
-    tree = build_mi_tree(X_numpy, y_numpy, q, names=list(X.columns))
     MIs = np.zeros((k, k))
-    for i in range(k):
-        for j in range(i + 1, k):
-            MIs[i, j] = MIs[j, i] = mi_quantile(X_numpy[:, i], X_numpy[:, j], q, norm=True)
-    leaf_names = get_leaf_names(tree)
+    for i, j in tqdm(combinations(range(k), 2), total=k * (k - 1) // 2, desc="Computing MI"):
+        MIs[i, j] = MIs[j, i] = mi_quantile(X_numpy[:, i], X_numpy[:, j], q, norm=True)
     mi_df = pd.DataFrame(MIs, index=X.columns, columns=X.columns)
-    mi_df_ordered = mi_df.loc[leaf_names, leaf_names]
-    logger.info("MI matrix computed")
+    synergies = np.zeros((k, k))
+    redundancies = np.zeros((k, k))
+    cut_small = lambda x: x if x > 5e-3 else 0
+    for i, j in tqdm(combinations(range(k), 2), total=k * (k - 1) // 2, desc="Computing PID"):
+        pid_result = pid_quantile(y_numpy, X_numpy[:, i], X_numpy[:, j], q)
+        synergy = cut_small(pid_result.mi_joint - pid_result.mi_linear)
+        redundancy = cut_small(pid_result.mi_a + pid_result.mi_b - pid_result.mi_linear)
+        total = max(pid_result.mi_joint, 0.05)
+        synergies[i, j] = synergies[j, i] = synergy / total
+        redundancies[i, j] = redundancies[j, i] = redundancy / total
+    synergy_df = pd.DataFrame(synergies, index=X.columns, columns=X.columns)
+    redundancy_df = pd.DataFrame(redundancies, index=X.columns, columns=X.columns)
+    ordering = get_ordering(MIs, synergies)
     plt.figure(figsize=(16, 14))
     with Silencer():
-        mask = mi_df_ordered < 2e-3
-        sns.heatmap(mi_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+        mask = mi_df < 2e-3
+        sns.heatmap(mi_df * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("MI Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "mi_matrix.png"))
     plt.close()
-    synergies = np.zeros((k, k))
-    redundancies = np.zeros((k, k))
-    cut_small = lambda x: x if x > 5e-3 else 0
-    for i in tqdm(range(k), desc="Computing PID for matrices"):
-        for j in range(i + 1, k):
-            pid_result = pid_quantile(y_numpy, X_numpy[:, i], X_numpy[:, j], q)
-            synergy = cut_small(pid_result.mi_joint - pid_result.mi_linear)
-            redundancy = cut_small(pid_result.mi_a + pid_result.mi_b - pid_result.mi_linear)
-            total = max(pid_result.mi_joint, 0.05)
-            synergies[i, j] = synergies[j, i] = synergy / total
-            redundancies[i, j] = redundancies[j, i] = redundancy / total
-    synergy_df = pd.DataFrame(synergies, index=X.columns, columns=X.columns)
-    synergy_df_ordered = synergy_df.loc[leaf_names, leaf_names]
-    logger.info("Synergy matrix computed")
     plt.figure(figsize=(16, 14))
     with Silencer():
-        mask = synergy_df_ordered < 2e-3
-        sns.heatmap(synergy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+        mask = synergy_df < 2e-3
+        sns.heatmap(synergy_df * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Synergy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "synergy_matrix.png"))
     plt.close()
-    redundancy_df = pd.DataFrame(redundancies, index=X.columns, columns=X.columns)
-    redundancy_df_ordered = redundancy_df.loc[leaf_names, leaf_names]
-    logger.info("Redundancy matrix computed")
     plt.figure(figsize=(16, 14))
     with Silencer():
-        mask = redundancy_df_ordered < 2e-3
-        sns.heatmap(redundancy_df_ordered * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
+        mask = redundancy_df < 2e-3
+        sns.heatmap(redundancy_df * 100, annot=True, fmt=".1f", cmap="Blues", mask=mask, square=True, cbar=False)
     plt.title("Redundancy Matrix")
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "redundancy_matrix.png"))
     plt.close()
-    with open(os.path.join(output_dir, "mi_tree.txt"), "w") as f:
-        f.write(str(tree))
-    render_tree_interactive(tree, output_file=os.path.join(output_dir, "interactive_tree.html"))
-    return leaf_names
 
 
 def _perform_and_plot_factor_analysis(
@@ -356,7 +298,6 @@ def _perform_and_plot_factor_analysis(
     X_numpy: Float[ND, "n k"],
     y_numpy: Float[ND, "n"],
     output_dir: str,
-    leaf_names: list[str] | None,
 ):
     k = X.shape[1]
     logger.info("Performing factor analysis")
@@ -376,9 +317,6 @@ def _perform_and_plot_factor_analysis(
         fa.fit(X_quantiles)
     loadings = fa.loadings_
     loadings_df = pd.DataFrame(loadings, index=all_feature_names, columns=[f"Factor {i + 1}" for i in range(n_factors)])
-    if leaf_names:
-        ordered_names = leaf_names + ["target"]
-        loadings_df = loadings_df.loc[ordered_names]
     plt.figure(figsize=(8, 12))
     sns.heatmap(loadings_df, annot=True, fmt=".2f", cmap="vlag", center=0.0)
     plt.title("Factors")
@@ -402,9 +340,9 @@ def show_structure(
     if do_regional_mi:
         _compute_and_plot_copulas_and_regional_mi(X, y_numpy, output_dir)
     if do_structure_matrices:
-        leaf_names = _compute_and_plot_structure_matrices(X, X_numpy, y_numpy, output_dir, q)
+        _compute_and_plot_structure_matrices(X, X_numpy, y_numpy, output_dir, q)
     if do_factor_analysis:
-        _perform_and_plot_factor_analysis(X, X_numpy, y_numpy, output_dir, leaf_names)
+        _perform_and_plot_factor_analysis(X, X_numpy, y_numpy, output_dir)
 
 
 def test_mi_quantile():
