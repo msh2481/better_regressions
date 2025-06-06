@@ -18,16 +18,22 @@ def generate_synthetic_data(n_samples=5000, random_state=42):
 
     # Factor 1: Market condition (heavy-tailed)
     market_factor = stats.t.rvs(df=3, size=n_samples)
+    market_factor /= market_factor.std()
     # Factor 2: Momentum
     momentum_factor = np.random.randn(n_samples)
+    momentum_factor /= momentum_factor.std()
     # Factor 3: Volatility (chi-squared for positive values)
     volatility_factor = np.sqrt(stats.chi2.rvs(df=5, size=n_samples))
+    volatility_factor /= volatility_factor.std()
     # Factor 4: Value (mixture of normals)
     value_factor = np.where(np.random.rand(n_samples) > 0.3, np.random.randn(n_samples), np.random.randn(n_samples) * 3 + 2)
+    value_factor /= value_factor.std()
     # Factor 5: Size (log-normal)
     size_factor = np.random.lognormal(0, 0.5, n_samples)
+    size_factor /= size_factor.std()
     # Factor 6: Quality (beta distribution)
     quality_factor = stats.beta.rvs(a=2, b=5, size=n_samples)
+    quality_factor /= quality_factor.std()
 
     features = {}
     # Linear combinations (what standard factor analysis finds)
@@ -101,7 +107,7 @@ def generate_synthetic_data(n_samples=5000, random_state=42):
 
 
 def test_mi_simple():
-    data = generate_synthetic_data(n_samples=100000)
+    data = generate_synthetic_data(n_samples=10000)
     print(data.head())
     data = data.to_numpy()[:, :6]
     n, d = data.shape
