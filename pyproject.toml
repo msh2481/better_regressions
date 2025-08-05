@@ -32,6 +32,7 @@ dependencies = [
     "networkx>=3.4.2",
     "plotly>=6.1.2",
     "factor-analyzer>=0.5.1",
+    "dcor>=0.6",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ from better_regressions.eda import (
 )
 from better_regressions.linear import AdaptiveLinear, Linear, Soft
 from better_regressions.piecewise import Angle
+from better_regressions.recency import EMA, Roll
 from better_regressions.scaling import (
     AutoScaler,
     PowerTransformer,
@@ -34,6 +35,8 @@ __all__ = [
     "AdaptiveLinear",
     "Soft",
     "Angle",
+    "EMA",
+    "Roll",
     "Scaler",
     "AutoScaler",
     "SecondMomentScaler",
