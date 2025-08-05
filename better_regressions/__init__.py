@@ -9,7 +9,13 @@ from better_regressions.eda import (
 )
 from better_regressions.linear import AdaptiveLinear, Linear, Soft
 from better_regressions.piecewise import Angle
-from better_regressions.recency import EMA, Roll
+from better_regressions.recency import (
+    EMA,
+    Roll,
+    estimate_signal_decay,
+    plot_signal_decay,
+    walk_forward_correlation,
+)
 from better_regressions.scaling import (
     AutoScaler,
     PowerTransformer,
@@ -37,6 +43,9 @@ __all__ = [
     "Angle",
     "EMA",
     "Roll",
+    "walk_forward_correlation",
+    "estimate_signal_decay",
+    "plot_signal_decay",
     "Scaler",
     "AutoScaler",
     "SecondMomentScaler",

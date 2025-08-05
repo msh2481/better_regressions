@@ -1,3 +1,5 @@
+import copy
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Literal
 
 import dcor
@@ -148,6 +150,48 @@ def walk_forward_correlation(regressor, X, y, t=None, method: Literal["pearson",
         raise ValueError(f"Unknown method: {method}")
 
 
+def _compute_span_correlations(args):
+    """Helper function for parallel computation of correlations for a single span."""
+    span, X, y, t, base_estimator, method, metrics, batch_size = args
+    row = {"span": span}
+    if method == "ema":
+        regressor = EMA(regressor=copy.deepcopy(base_estimator), span=span)
+    elif method == "roll":
+        regressor = Roll(regressor=copy.deepcopy(base_estimator), span=span)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    for metric in metrics:
+        try:
+            corr = walk_forward_correlation(regressor, X, y, t=t, method=metric, batch_size=batch_size)
+            row[metric] = corr
+        except Exception:
+            row[metric] = 0.0
+    return row
+
+
+def plot_signal_decay(df, method, spans=None, name="-"):
+    if spans is None:
+        spans = df["span"].values
+    plt.figure(figsize=(12, 6))
+    colors = {"pearson": "blue", "spearman": "green", "dcor": "red"}
+    metrics = [col for col in df.columns if col != "span"]
+    for metric in metrics:
+        if metric in df.columns:
+            values = 100 * df[metric].values
+            argmax = np.argmax(values)
+            best_span = spans[argmax]
+            best_corr = values[argmax]
+            plt.plot(spans, values, lw=2, marker="o", markersize=4, color=colors.get(metric, "black"), label=f"{metric} (best: {best_span:.1f}, {best_corr:.2f})")
+            plt.axvline(best_span, color=colors.get(metric, "black"), alpha=0.3, linestyle="--")
+    plt.xlabel(f"{method.upper()} span")
+    plt.xscale("log")
+    plt.ylabel("Correlation")
+    plt.title(f"Correlation vs span ({method.upper()} method) for {name}")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+
 def estimate_signal_decay(
     X,
     y,
@@ -159,11 +203,19 @@ def estimate_signal_decay(
     use_spearman=True,
     use_dcor=True,
     batch_size=10,
+    show_plot=True,
+    name="-",
+    n_jobs=None,
 ):
     if base_estimator is None:
         base_estimator = Ridge(alpha=1e-6)
     if spans is None:
         spans = np.logspace(0, 3, 30)
+    if n_jobs is None:
+        import os
+
+        n_jobs = os.cpu_count()
+
     metrics = []
     if use_pearson:
         metrics.append("pearson")
@@ -172,46 +224,40 @@ def estimate_signal_decay(
     if use_dcor:
         metrics.append("dcor")
 
+    args_list = [(span, X, y, t, base_estimator, method, metrics, batch_size) for span in spans]
+
     results = []
-    for span in tqdm(spans, desc="Testing spans"):
-        row = {"span": span}
-        if method == "ema":
-            regressor = EMA(regressor=base_estimator, span=span)
-        elif method == "roll":
-            regressor = Roll(regressor=base_estimator, span=span)
-        else:
-            raise ValueError(f"Unknown method: {method}")
-        for metric in metrics:
-            try:
-                corr = walk_forward_correlation(regressor, X, y, t=t, method=metric, batch_size=batch_size)
-                row[metric] = corr
-            except Exception:
-                row[metric] = 0.0
-        results.append(row)
+
+    if n_jobs == 1:
+        # Sequential processing
+        for args in tqdm(args_list, desc="Testing spans"):
+            results.append(_compute_span_correlations(args))
+    else:
+        # Parallel processing
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            # Submit all tasks
+            future_to_span = {executor.submit(_compute_span_correlations, args): args[0] for args in args_list}
+
+            # Collect results with progress bar
+            for future in tqdm(as_completed(future_to_span), total=len(spans), desc="Testing spans"):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    span = future_to_span[future]
+                    print(f"Error processing span {span}: {e}")
+                    # Add fallback result
+                    row = {"span": span}
+                    for metric in metrics:
+                        row[metric] = 0.0
+                    results.append(row)
+
+    # Sort results by span to maintain order
+    results.sort(key=lambda x: x["span"])
     df = pd.DataFrame(results)
 
-    plt.figure(figsize=(12, 6))
-    colors = {"pearson": "blue", "spearman": "green", "dcor": "red"}
-    best_spans = {}
-
-    for metric in metrics:
-        values = df[metric].values
-        argmax = np.argmax(values)
-        best_span = spans[argmax]
-        best_corr = values[argmax]
-        best_spans[metric] = (best_span, best_corr)
-
-        plt.plot(spans, values, lw=2, marker="o", markersize=4, color=colors[metric], label=f"{metric} (best: {best_span:.1f}, {best_corr:.3f})")
-        plt.axvline(best_span, color=colors[metric], alpha=0.3, linestyle="--")
-
-    plt.xlabel(f"{method.upper()} span")
-    plt.xscale("log")
-    plt.ylabel("Correlation")
-    plt.title(f"Walk-forward correlation vs span ({method.upper()} method)")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.show()
-
+    if show_plot:
+        plot_signal_decay(df, method, spans, name=name)
     return df
 
 
@@ -244,7 +290,8 @@ def test_walk_forward_correlation():
     np.random.seed(42)
     n = 100
     X = np.random.randn(n, 2)
-    y = X @ np.array([1, -0.5]) + 0.1 * np.random.randn(n)
+    random_signs = np.random.choice([-1, 1], size=n) + 0.1
+    y = (X @ np.array([1, -0.5])) * random_signs + np.random.randn(n)
 
     ema = EMA(span=10)
     corr_pearson = walk_forward_correlation(ema, X, y, method="pearson")
@@ -260,13 +307,13 @@ def test_walk_forward_correlation():
 
 def test_estimate_signal_decay():
     np.random.seed(42)
-    n = 100
+    n = 1000
     d = 3
     xs = []
     ys = []
     w = np.random.randn(d)
     for i in range(n):
-        if np.random.rand() < 0.1:
+        if np.random.rand() < 0.01:
             w = np.random.randn(d)
         x = np.random.randn(d)
         xs.append(x)
@@ -274,9 +321,23 @@ def test_estimate_signal_decay():
     X = np.array(xs)
     y = np.array(ys)
     t = np.arange(n)
-    df = estimate_signal_decay(X, y, t=t, method="ema", use_pearson=True, use_spearman=True, use_dcor=True, batch_size=5)
-    print(df)
+
+    df = estimate_signal_decay(
+        X,
+        y,
+        t=t,
+        method="roll",
+        spans=np.logspace(0.5, 2.5, 10),
+        use_pearson=True,
+        use_spearman=True,
+        use_dcor=True,
+        batch_size=5,
+        show_plot=True,
+        name="X",
+        n_jobs=2,  # Use 2 processes for testing
+    )
+    print(df.to_string())
 
 
 if __name__ == "__main__":
-    test_walk_forward_correlation()
+    test_estimate_signal_decay()
