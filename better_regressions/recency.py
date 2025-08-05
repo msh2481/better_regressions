@@ -322,19 +322,21 @@ def test_estimate_signal_decay():
     y = np.array(ys)
     t = np.arange(n)
 
+    from sklearn.svm import SVR
+
     df = estimate_signal_decay(
         X,
         y,
         t=t,
-        method="roll",
-        spans=np.logspace(0.5, 2.5, 10),
+        method="ema",
+        base_estimator=SVR(kernel="rbf"),
+        spans=np.logspace(0, 3, 30),
         use_pearson=True,
         use_spearman=True,
         use_dcor=True,
         batch_size=5,
         show_plot=True,
         name="X",
-        n_jobs=2,  # Use 2 processes for testing
     )
     print(df.to_string())
 
