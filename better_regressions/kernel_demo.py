@@ -20,7 +20,7 @@ def demo_moons_pca(random_state: int = 0) -> None:
             forest_kind="rf",
             regression=False,
             n_estimators=200,
-            min_samples_leaf=0.02,
+            min_samples_leaf=0.1,
             n_components=200,
             random_state=random_state,
         ),
@@ -41,11 +41,11 @@ def demo_moons_kmeans(random_state: int = 1) -> None:
             forest_kind="et",
             regression=False,
             n_estimators=300,
-            min_samples_leaf=0.01,
+            min_samples_leaf=0.1,
             n_components=250,
             random_state=random_state,
         ),
-        KMeans(n_clusters=2, n_init=20, random_state=random_state),
+        KMeans(n_clusters=20, n_init=20, random_state=random_state),
     )
     pipeline.fit(X, y)
     clusters = pipeline.named_steps["kmeans"].labels_
@@ -66,7 +66,7 @@ def demo_quadratic_gp(random_state: int = 2) -> None:
             forest_kind="rf",
             regression=True,
             n_estimators=250,
-            min_samples_leaf=0.01,
+            min_samples_leaf=0.1,
             n_components=200,
             random_state=random_state,
         ),

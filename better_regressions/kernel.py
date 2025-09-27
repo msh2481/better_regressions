@@ -19,11 +19,11 @@ from sklearn.utils.validation import check_is_fitted
 class SupervisedNystroem(BaseEstimator, TransformerMixin):
     def __init__(
         self,
-        forest_kind: Literal["rf", "et"] = "rf",
+        forest_kind: Literal["rf", "et"] = "et",
         regression: bool = True,
         n_estimators: int = 100,
         max_depth: int | None = None,
-        min_samples_leaf: int | float = 1,
+        min_samples_leaf: int | float = 0.1,
         n_jobs: int | None = None,
         random_state: int | None = None,
         n_components: int | None = None,
