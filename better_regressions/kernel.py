@@ -18,12 +18,8 @@ from sklearn.utils.validation import check_is_fitted
 class SupervisedNystroem(BaseEstimator, TransformerMixin):
     def __init__(
         self,
-        forest_kind: Literal[
-            "rf_classifier",
-            "rf_regressor",
-            "et_classifier",
-            "et_regressor",
-        ] = "rf_classifier",
+        forest_kind: Literal["rf", "et"] = "rf",
+        regression: bool = True,
         n_estimators: int = 100,
         max_depth: int | None = None,
         min_samples_leaf: int | float = 1,
@@ -32,6 +28,7 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
         n_components: int | None = None,
     ) -> None:
         self.forest_kind = forest_kind
+        self.regression = regression
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
@@ -73,14 +70,10 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
         return self.fit(X, y).transform(X)
 
     def _resolve_forest(self):
-        if self.forest_kind == "rf_classifier":
-            return RandomForestClassifier
-        if self.forest_kind == "rf_regressor":
-            return RandomForestRegressor
-        if self.forest_kind == "et_classifier":
-            return ExtraTreesClassifier
-        if self.forest_kind == "et_regressor":
-            return ExtraTreesRegressor
+        if self.forest_kind == "rf":
+            return RandomForestRegressor if self.regression else RandomForestClassifier
+        if self.forest_kind == "et":
+            return ExtraTreesRegressor if self.regression else ExtraTreesClassifier
         raise ValueError(f"Unknown forest_kind: {self.forest_kind}")
 
     def _leaf_kernel(self, X: ArrayLike, Y: ArrayLike | None = None) -> np.ndarray:
