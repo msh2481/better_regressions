@@ -55,3 +55,8 @@ yc_pred = clf.predict(Xc)
 plot_distribution(y, name="Target Distribution")
 plot_trend(X[:, 0], y, name="Feature 0 vs Target")
 ```
+
+## Building new verison
+1. Update `__version__` in `better_regressions/__init__.py` and `pyproject.toml`
+2. `python -m build`
+3. `python -m twine upload dist/*`

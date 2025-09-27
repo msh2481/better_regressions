@@ -7,6 +7,7 @@ from better_regressions.eda import (
     plot_trend_continuous,
     plot_trend_discrete,
 )
+from better_regressions.kernel import SupervisedNystroem
 from better_regressions.linear import AdaptiveLinear, Linear, Soft
 from better_regressions.piecewise import Angle
 from better_regressions.recency import (
@@ -62,6 +63,7 @@ __all__ = [
     "plot_trend",
     "plot_trend_continuous",
     "plot_trend_discrete",
+    "SupervisedNystroem",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
