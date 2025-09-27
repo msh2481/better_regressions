@@ -47,10 +47,7 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
             random_state=self.random_state,
         )
         logger.info(
-            "Fitting forest with %s estimators, X.shape=%s, y.shape=%s",
-            self.n_estimators,
-            np.shape(X),
-            np.shape(y),
+            f"Fitting forest with {self.n_estimators} estimators, X.shape={X.shape}, y.shape={y.shape}",
         )
         self.forest_.fit(X, y)
         logger.info(f"Forest fitted")
@@ -62,7 +59,8 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
         if n_components <= 0:
             raise ValueError("n_components must be positive")
         if n_components > n_samples:
-            raise ValueError("n_components cannot exceed number of samples")
+            n_components = n_samples
+            logger.warning(f"n_components={n_components} > n_samples={n_samples}, setting n_components to n_samples")
         rng = check_random_state(self.random_state)
         component_indices = np.arange(n_samples) if n_components == n_samples else rng.choice(n_samples, size=n_components, replace=False)
         logger.info(f"Selected {n_components} reference components")
