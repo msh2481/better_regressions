@@ -21,7 +21,7 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
         self,
         forest_kind: Literal["rf", "et"] = "et",
         regression: bool = True,
-        n_estimators: int = 100,
+        n_estimators: int = 300,
         max_depth: int | None = None,
         min_samples_leaf: int | float = 0.1,
         n_jobs: int | None = None,
@@ -59,8 +59,8 @@ class SupervisedNystroem(BaseEstimator, TransformerMixin):
         if n_components <= 0:
             raise ValueError("n_components must be positive")
         if n_components > n_samples:
-            n_components = n_samples
             logger.warning(f"n_components={n_components} > n_samples={n_samples}, setting n_components to n_samples")
+            n_components = n_samples
         rng = check_random_state(self.random_state)
         component_indices = np.arange(n_samples) if n_components == n_samples else rng.choice(n_samples, size=n_components, replace=False)
         logger.info(f"Selected {n_components} reference components")
