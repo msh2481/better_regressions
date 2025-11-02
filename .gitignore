@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 output/
+kan_results/
 
 # Virtual environments
 .venv
