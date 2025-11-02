@@ -33,6 +33,7 @@ dependencies = [
     "plotly>=6.1.2",
     "factor-analyzer>=0.5.1",
     "dcor>=0.6",
+    "torch>=2.9.0",
 ]
 
 [project.optional-dependencies]
