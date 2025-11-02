@@ -13,19 +13,17 @@ class PointwiseKANLayer(nn.Module):
         self.input_size = input_size
         self.num_repu_terms = num_repu_terms
         self.repu_order = repu_order
-        self.silu = nn.ReLU()
-        self.norm_constant = nn.Parameter(torch.ones(input_size))
+        self.base_activation = nn.ReLU()
         self.coefficients = nn.Parameter(torch.randn(input_size, num_repu_terms) * eps)
         self.biases = nn.Parameter(torch.randn(input_size, num_repu_terms))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        silu_out = self.silu(x)
-        x_normalized = x / self.norm_constant
-        x_expanded = x_normalized.unsqueeze(-1)
+        base_out = self.base_activation(x)
+        x_expanded = x.unsqueeze(-1)
         shifted = x_expanded + self.biases
         repu_terms = F.relu(shifted) ** self.repu_order
         linear_comb = torch.sum(self.coefficients.unsqueeze(0) * repu_terms, dim=-1)
-        return silu_out + linear_comb
+        return base_out + linear_comb
 
 
 class RunningRMSNorm(nn.Module):
@@ -69,7 +67,7 @@ class MLPBlock(nn.Module):
             nn.init.normal_(self.linear.weight, std=1e-6)
         
         if use_norm:
-            self.norm = RunningRMSNorm(in_features)
+            self.norm = RunningRMSNorm(out_features)
         else:
             self.norm = None
         
@@ -79,9 +77,9 @@ class MLPBlock(nn.Module):
             self.activation = nn.ReLU()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.norm is not None:
-            x = self.norm(x)
         out = self.linear(x)
+        if self.norm is not None:
+            out = self.norm(out)
         out = self.activation(out)
         if self.residual:
             out = x + out
