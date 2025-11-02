@@ -146,11 +146,11 @@ def test_kan_models():
         ("Product 3D", generate_product_3d, 3),
     ]
 
-    noise_level = 0.0
-    n_train = 1000
+    noise_level = 0.1
+    n_train = 100
     n_val = 200
     n_test = 1000
-    max_epochs = 200
+    max_epochs = 1000
     batch_size = 32
 
     print(f"\nTesting KAN models with noise={noise_level}, n_train={n_train}")

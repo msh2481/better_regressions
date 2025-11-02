@@ -6,26 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
-
-class PointwiseKANLayer(nn.Module):
-    def __init__(self, input_size: int, num_repu_terms: int = 8, repu_order: int = 2, eps: float = 0.01):
-        super().__init__()
-        self.input_size = input_size
-        self.num_repu_terms = num_repu_terms
-        self.repu_order = repu_order
-        self.base_activation = nn.ReLU()
-        self.coefficients = nn.Parameter(torch.randn(input_size, num_repu_terms) * eps)
-        self.biases = nn.Parameter(torch.randn(input_size, num_repu_terms))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base_out = self.base_activation(x)
-        x_expanded = x.unsqueeze(-1)
-        shifted = x_expanded + self.biases
-        repu_terms = F.relu(shifted) ** self.repu_order
-        linear_comb = torch.sum(self.coefficients.unsqueeze(0) * repu_terms, dim=-1)
-        return base_out + linear_comb
-
-
 class RunningRMSNorm(nn.Module):
     def __init__(self, num_features: int, span: int = 1000, eps: float = 1e-8):
         super().__init__()
@@ -38,7 +18,7 @@ class RunningRMSNorm(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.training:
-            mean_sq = torch.mean(x ** 2, dim=0)
+            mean_sq = torch.mean(x.detach() ** 2, dim=0)
             self.running_mean_sq = (1 - self.alpha) * self.running_mean_sq + self.alpha * mean_sq
             self.count += 1
         
@@ -46,6 +26,28 @@ class RunningRMSNorm(nn.Module):
         adjusted_mean_sq = self.running_mean_sq / (bias_correction + self.eps)
         rms = torch.sqrt(adjusted_mean_sq + self.eps)
         return x / rms.unsqueeze(0)
+
+
+class PointwiseKANLayer(nn.Module):
+    def __init__(self, input_size: int, num_repu_terms: int = 8, repu_order: int = 2, eps: float = 0.01):
+        super().__init__()
+        self.input_size = input_size
+        self.num_repu_terms = num_repu_terms
+        self.repu_order = repu_order
+        self.base_activation = nn.ReLU()
+        self.norm = RunningRMSNorm(input_size)
+        self.coefficients = nn.Parameter(torch.randn(input_size, num_repu_terms) * eps)
+        self.biases = nn.Parameter(torch.randn(input_size, num_repu_terms))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_out = self.base_activation(x)
+        x = self.norm(x)
+        x_expanded = x.unsqueeze(-1)
+        shifted = x_expanded + self.biases
+        repu_terms = F.relu(shifted) ** self.repu_order
+        linear_comb = torch.sum(self.coefficients.unsqueeze(0) * repu_terms, dim=-1)
+        return base_out + linear_comb
+
 
 
 class MLPBlock(nn.Module):
@@ -67,7 +69,7 @@ class MLPBlock(nn.Module):
             nn.init.normal_(self.linear.weight, std=1e-6)
         
         if use_norm:
-            self.norm = RunningRMSNorm(out_features)
+            self.norm = RunningRMSNorm(in_features)
         else:
             self.norm = None
         
@@ -77,9 +79,11 @@ class MLPBlock(nn.Module):
             self.activation = nn.ReLU()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.linear(x)
         if self.norm is not None:
-            out = self.norm(out)
+            out = self.norm(x)
+        else:
+            out = x
+        out = self.linear(out)
         out = self.activation(out)
         if self.residual:
             out = x + out
