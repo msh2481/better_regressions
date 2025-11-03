@@ -175,8 +175,8 @@ def test_kan_models():
         models_to_test = [
             ("MLP", MLP(dim_list=[n_features, 32, 1])),
             ("MLP (residual)", MLP(dim_list=[n_features, 32, 1], residual=True)),
-            ("KAN", KAN(dim_list=[n_features, 16, 1], k=4)),
-            ("KAN (residual)", KAN(dim_list=[n_features, 16, 1], k=4, residual=True)),
+            ("KAN", KAN(dim_list=[n_features, n_features, 1], k=16)),
+            ("KAN (residual)", KAN(dim_list=[n_features, n_features, 1], k=16, residual=True)),
         ]
         
         for model_name, model in models_to_test:

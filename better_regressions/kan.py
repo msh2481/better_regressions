@@ -43,7 +43,7 @@ class PointwiseRELUKAN(nn.Module):
         midpoint_values = normal_dist.icdf(quantiles)
         
         self.midpoints = nn.Parameter(midpoint_values.repeat((input_size, 1)).unsqueeze(0), requires_grad=False)
-        self.radius = nn.Parameter(torch.tensor(2 / k).repeat(1, input_size, 1))
+        self.radius = nn.Parameter(torch.tensor(8 / k).repeat(1, input_size, 1), requires_grad=False)
         print("Shape:", self.midpoints.shape, self.radius.shape)
         self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
 
@@ -55,8 +55,27 @@ class PointwiseRELUKAN(nn.Module):
         ab2 = (a * b / h)**2
         return (ab2 * self.w).sum(dim=-1)
 
+class PointwiseRELU(nn.Module):
+    def __init__(self, input_size: int, k: int = 8):
+        super().__init__()
+        self.input_size = input_size
+        self.k = k
+        
+        quantiles = torch.linspace(1 / k, 1 - 1 / k, k)
+        normal_dist = torch.distributions.Normal(0.0, 1.0)
+        midpoint_values = normal_dist.icdf(quantiles)
+        self.midpoints = nn.Parameter(midpoint_values.repeat((input_size, 1)).unsqueeze(0), requires_grad=False)
+        print("Shape:", self.midpoints.shape)
+        self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.unsqueeze(2) # [batch, input, k]
+        a = torch.abs(x - self.midpoints)
+        return (a * self.w).sum(dim=-1)
+    
+
 def l1_to_l2(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    return torch.linalg.vector_norm(x, p=1) / (torch.linalg.vector_norm(x, p=2) + eps)
+    return torch.linalg.vector_norm(x, ord=1) / (torch.linalg.vector_norm(x, ord=2) + eps)
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -115,7 +134,7 @@ class KANBlock(nn.Module):
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
         self.norm = RunningRMSNorm(in_features)
-        self.activation = PointwiseRELUKAN(in_features, k)
+        self.activation = PointwiseRELU(in_features, k)
     
     def forward(self, x: torch.Tensor, x_orig: torch.Tensor) -> torch.Tensor:
         out = self.norm(x)
@@ -141,6 +160,7 @@ class KANBlock(nn.Module):
         if orig_x_weight > 0:
             orig_x_weights = weights[:, -x_features:]
             loss += orig_x_weight * orig_x_weights.square().mean()
+        
         
         return loss
 
@@ -247,7 +267,10 @@ class KAN(nn.Module):
 
 def visualize_pointwise_relu_kan(activation: PointwiseRELUKAN, save_path: str) -> None:
     midpoints = activation.midpoints.squeeze(0).detach().cpu().numpy()
-    radius = activation.radius.squeeze(0).detach().cpu().numpy()
+    try:
+        radius = activation.radius.squeeze(0).detach().cpu().numpy()
+    except:
+        radius = (torch.ones_like(activation.midpoints) * 1000).squeeze(0).detach().cpu().numpy()
     
     input_size = activation.input_size
     x_range = torch.linspace(-3, 3, 300)
