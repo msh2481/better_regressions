@@ -1,6 +1,10 @@
 import math
+import os
 from typing import Protocol
 
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +40,7 @@ class PointwiseRELUKAN(nn.Module):
         # [1, input, k]
         midpoints = torch.linspace(-3, 3, k).repeat((input_size, 1)).unsqueeze(0)
         radius = 6 / k
-        self.base_activation = nn.SiLU()
+        self.base_activation = nn.Identity()
         self.l = nn.Parameter(midpoints - radius)
         self.r = nn.Parameter(midpoints + radius)
         self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
@@ -50,6 +54,8 @@ class PointwiseRELUKAN(nn.Module):
         ab2 = (a * b / h)**2
         return base + (ab2 * self.w).sum(dim=-1)
 
+def l1_to_l2(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    return torch.linalg.vector_norm(x, p=1) / (torch.linalg.vector_norm(x, p=2) + eps)
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -83,6 +89,14 @@ class MLPBlock(nn.Module):
         if self.residual:
             out = x + out
         return out
+    
+    def extra_loss(self, sparsity_weight: float = 0.0) -> torch.Tensor:
+        if sparsity_weight <= 0:
+            device = self.linear.weight.device
+            return torch.tensor(0.0, device=device)
+        
+        weights = self.linear.weight
+        return sparsity_weight * l1_to_l2(weights)
 
 
 class KANBlock(nn.Module):
@@ -90,26 +104,44 @@ class KANBlock(nn.Module):
         self,
         in_features: int,
         out_features: int,
+        x_features: int,
         k: int = 4,
-        repu_order: int = 2,
-        eps: float = 0.01,
         residual: bool = False,
     ):
         super().__init__()
-        self.linear = nn.Linear(in_features, out_features)
+        self.linear = nn.Linear(in_features + x_features, out_features)
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
         self.norm = RunningRMSNorm(in_features)
         self.activation = PointwiseRELUKAN(in_features, k)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, x_orig: torch.Tensor) -> torch.Tensor:
         out = self.norm(x)
         out = self.activation(out)
+        out = torch.cat([out, x_orig], dim=-1)
         out = self.linear(out)
         if self.residual:
             out = x + out
         return out
+    
+    def extra_loss(
+        self,
+        x_features: int,
+        sparsity_weight: float = 0.0,
+        orig_x_weight: float = 0.0,
+    ) -> torch.Tensor:
+        weights = self.linear.weight
+        loss = torch.tensor(0.0, device=weights.device)
+        
+        if sparsity_weight > 0:
+            loss += sparsity_weight * l1_to_l2(weights)
+        
+        if orig_x_weight > 0:
+            orig_x_weights = weights[:, -x_features:]
+            loss += orig_x_weight * orig_x_weights.square().mean()
+        
+        return loss
 
 
 class MLP(nn.Module):
@@ -118,8 +150,17 @@ class MLP(nn.Module):
         dim_list: list[int],
         residual: bool = False,
         use_norm: bool = True,
+        sparsity_weight: float = 0.0,
     ):
         super().__init__()
+        
+        if residual and len(dim_list) > 2:
+            mid = dim_list[1:-1]
+            if min(mid) != max(mid):
+                raise ValueError("When residual is True, the number of features in the middle layers must be the same.")
+
+        self.sparsity_weight = sparsity_weight
+        
         self.blocks = nn.ModuleList()
         for i in range(len(dim_list) - 2):
             block = MLPBlock(
@@ -135,6 +176,20 @@ class MLP(nn.Module):
         for block in self.blocks:
             x = block(x)
         return x
+    
+    def extra_loss(self) -> torch.Tensor:
+        total_loss = torch.tensor(0.0)
+        device = next(self.parameters()).device
+        total_loss = total_loss.to(device)
+        
+        for block in self.blocks:
+            if isinstance(block, MLPBlock):
+                total_loss = total_loss + block.extra_loss(self.sparsity_weight)
+            elif isinstance(block, nn.Linear):
+                weights = block.weight
+                total_loss = total_loss + self.sparsity_weight * l1_to_l2(weights)
+        
+        return total_loss
 
 
 class KAN(nn.Module):
@@ -142,27 +197,132 @@ class KAN(nn.Module):
         self,
         dim_list: list[int],
         k: int = 4,
-        repu_order: int = 2,
-        eps: float = 0.01,
         residual: bool = False,
+        sparsity_weight: float = 1e-3,
+        orig_x_weight: float = 1e-3,
     ):
         super().__init__()
+
+        if residual and len(dim_list) > 2:
+            mid = dim_list[1:-1]
+            if min(mid) != max(mid):
+                raise ValueError("When residual is True, the number of features in the middle layers must be the same.")
+
+        self.x_features = dim_list[0]
+        self.sparsity_weight = sparsity_weight
+        self.orig_x_weight = orig_x_weight
+        
         self.blocks = nn.ModuleList()
         for i in range(len(dim_list) - 1):
             block = KANBlock(
                 dim_list[i],
                 dim_list[i + 1],
+                x_features=self.x_features,
                 k=k,
-                repu_order=repu_order,
-                eps=eps,
                 residual=residual,
             )
             self.blocks.append(block)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_orig = x
         for block in self.blocks:
-            x = block(x)
+            x = block(x, x_orig)
         return x
+    
+    def extra_loss(self) -> torch.Tensor:
+        total_loss = torch.tensor(0.0)
+        device = next(self.parameters()).device
+        total_loss = total_loss.to(device)
+        
+        for block in self.blocks:
+            total_loss = total_loss + block.extra_loss(
+                self.x_features,
+                self.sparsity_weight,
+                self.orig_x_weight,
+            )
+        
+        return total_loss
+
+
+def visualize_pointwise_relu_kan(activation: PointwiseRELUKAN, save_path: str) -> None:
+    l = activation.l.squeeze(0).detach().cpu().numpy()
+    r = activation.r.squeeze(0).detach().cpu().numpy()
+    
+    input_size = activation.input_size
+    x_range = torch.linspace(-3, 3, 300)
+    
+    n = int(math.sqrt(input_size))
+    m = math.ceil(input_size / n)
+    
+    fig, axes = plt.subplots(n, m, figsize=(4 * m, 3 * n))
+    if input_size == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+    
+    for feat_idx in range(input_size):
+        ax = axes[feat_idx]
+        x_np = x_range.numpy()
+        
+        x_tensor = torch.zeros(len(x_range), input_size)
+        x_tensor[:, feat_idx] = x_range
+        with torch.no_grad():
+            activation.eval()
+            y = activation(x_tensor)
+            y_np = y[:, feat_idx].cpu().numpy()
+        
+        ax.plot(x_np, y_np, 'k-', linewidth=1.5)
+        
+        for k_idx in range(activation.k):
+            ax.axvline(l[feat_idx, k_idx], color='blue', linestyle='--', alpha=0.6, linewidth=1)
+            ax.axvline(r[feat_idx, k_idx], color='red', linestyle='--', alpha=0.6, linewidth=1)
+        
+        ax.set_xlim(-3, 3)
+        ax.set_xlabel('x')
+        ax.set_ylabel(f'Feature {feat_idx}')
+        ax.set_title(f'Feature {feat_idx}')
+        ax.grid(True, alpha=0.3)
+    
+    for feat_idx in range(input_size, len(axes)):
+        axes[feat_idx].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def visualize_linear(linear: nn.Linear, save_path: str) -> None:
+    weights = linear.weight.detach().cpu().numpy()
+    
+    fig, ax = plt.subplots(figsize=(max(8, weights.shape[1] * 0.5), max(6, weights.shape[0] * 0.5)))
+    im = ax.imshow(weights, aspect='auto', cmap='RdBu_r', vmin=-weights.std()*3, vmax=weights.std()*3)
+    
+    for i in range(weights.shape[0]):
+        for j in range(weights.shape[1]):
+            text = ax.text(j, i, f'{weights[i, j]:.2f}', ha='center', va='center', 
+                          color='black' if abs(weights[i, j]) < weights.std() else 'white',
+                          fontsize=8)
+    
+    ax.set_xlabel('Input feature')
+    ax.set_ylabel('Output feature')
+    ax.set_title('Linear Weights')
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    
+    plt.colorbar(im, ax=ax)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def visualize_kan_block(block: KANBlock, layer_idx: int, folder_name: str) -> None:
+    visualize_pointwise_relu_kan(block.activation, os.path.join(folder_name, f'layer_{layer_idx}_activations.png'))
+    visualize_linear(block.linear, os.path.join(folder_name, f'layer_{layer_idx}_weights.png'))
+
+
+def visualize_kan(model: KAN, folder_name: str) -> None:
+    os.makedirs(folder_name, exist_ok=True)
+    for layer_idx, block in enumerate(model.blocks):
+        visualize_kan_block(block, layer_idx, folder_name)
 
 
 class LRScheduler(Protocol):
@@ -204,6 +364,11 @@ def fit_regression(
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
+            
+            if hasattr(model, 'extra_loss'):
+                extra = model.extra_loss()
+                loss = loss + extra
+            
             loss.backward()
 
             if clip_grad_norm is not None:
