@@ -74,6 +74,18 @@ class PointwiseRELU(nn.Module):
         return (a * self.w).sum(dim=-1)
     
 
+class Copy(nn.Module):
+    def __init__(self, input_dim: int, k: int):
+        super().__init__()
+        self.input_dim = input_dim
+        self.k = k
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (batch, input_dim)
+        # output shape: (batch, input_dim * k)
+        return x.repeat_interleave(self.k, dim=-1)
+
+
 def l1_to_max(x: torch.Tensor, norm_dim: int, eps: float = 1e-8) -> torch.Tensor:
     return (x.abs().mean(dim=norm_dim) / (x.abs().max(dim=norm_dim).values + eps)).mean()
 
@@ -124,27 +136,29 @@ class KANBlock(nn.Module):
         self,
         in_features: int,
         out_features: int,
+        copies: int = 4,
         k: int = 4,
         residual: bool = False,
     ):
         super().__init__()
-        self.linear = nn.Linear(in_features, out_features)
+        self.copy = Copy(in_features, copies)
+        self.linear = nn.Linear(in_features * copies, out_features)
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
-        self.norm = RunningRMSNorm(out_features)
-        self.activation = PointwiseRELU(out_features, k)
+        self.norm = RunningRMSNorm(in_features)
+        self.activation = PointwiseRELU(in_features * copies, k)
         self._last_linear_output = None
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.linear(x)
+        out = self.norm(x)
+        out = self.copy(out)
+        out = self.activation(out)
+        out = self.linear(out)
         if self.training:
             self._last_linear_output = out
         else:
             self._last_linear_output = None
-        
-        out = self.norm(out)
-        out = self.activation(out)
         if self.residual:
             out = x + out
         return out
@@ -208,7 +222,7 @@ class MLP(nn.Module):
                 total_loss = total_loss + block.extra_loss(self.sparsity_weight)
             elif isinstance(block, nn.Linear):
                 weights = block.weight
-                total_loss = total_loss + self.sparsity_weight * l1_to_max(weights)
+                total_loss = total_loss + self.sparsity_weight * l1_to_max(weights, norm_dim=1)
         
         return total_loss
 
@@ -218,6 +232,7 @@ class KAN(nn.Module):
         self,
         dim_list: list[int],
         k: int = 4,
+        copies: int = 4,
         residual: bool = False,
         sparsity_weight: float = 1e-2,
         activation_sparsity_weight: float = 1e-2,
@@ -238,6 +253,7 @@ class KAN(nn.Module):
                 dim_list[i],
                 dim_list[i + 1],
                 k=k,
+                copies=copies,
                 residual=residual,
             )
             self.blocks.append(block)
