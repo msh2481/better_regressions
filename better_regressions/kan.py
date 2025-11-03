@@ -28,13 +28,13 @@ class RunningRMSNorm(nn.Module):
         return x / rms.unsqueeze(0)
 
 
-class PointwiseKANLayer(nn.Module):
+class PointwisePowerMLP(nn.Module):
     def __init__(self, input_size: int, num_repu_terms: int = 8, repu_order: int = 2, eps: float = 0.01):
         super().__init__()
         self.input_size = input_size
         self.num_repu_terms = num_repu_terms
         self.repu_order = repu_order
-        self.base_activation = nn.ReLU()
+        self.base_activation = nn.GELU()
         self.norm = RunningRMSNorm(input_size)
         self.coefficients = nn.Parameter(torch.randn(input_size, num_repu_terms) * eps)
         self.biases = nn.Parameter(torch.randn(input_size, num_repu_terms))
@@ -48,6 +48,27 @@ class PointwiseKANLayer(nn.Module):
         linear_comb = torch.sum(self.coefficients.unsqueeze(0) * repu_terms, dim=-1)
         return base_out + linear_comb
 
+class PointwiseRELUKAN(nn.Module):
+    def __init__(self, input_size: int, k: int = 8):
+        super().__init__()
+        self.input_size = input_size
+        self.k = k
+        # [1, input, k]
+        midpoints = torch.linspace(-3, 3, k).repeat((input_size, 1)).unsqueeze(0)
+        radius = 6 / k
+        self.base_activation = nn.SiLU()
+        self.l = nn.Parameter(midpoints - radius)
+        self.r = nn.Parameter(midpoints + radius)
+        self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base = self.base_activation(x)
+        x = x.unsqueeze(2) # [batch, input, k]
+        a = torch.nn.functional.relu(x - self.l)
+        b = torch.nn.functional.relu(self.r - x)
+        h = ((self.r - self.l) / 2) ** 2
+        ab2 = (a * b / h)**2
+        return base + (ab2 * self.w).sum(dim=-1)
 
 
 class MLPBlock(nn.Module):
@@ -56,7 +77,7 @@ class MLPBlock(nn.Module):
         in_features: int,
         out_features: int,
         pointwise: bool = False,
-        num_repu_terms: int = 4,
+        k: int = 4,
         repu_order: int = 2,
         eps: float = 0.01,
         residual: bool = False,
@@ -65,6 +86,7 @@ class MLPBlock(nn.Module):
         super().__init__()
         self.linear = nn.Linear(in_features, out_features)
         self.residual = residual and in_features == out_features
+        self.pointwise = pointwise
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
         
@@ -74,17 +96,22 @@ class MLPBlock(nn.Module):
             self.norm = None
         
         if pointwise:
-            self.activation = PointwiseKANLayer(out_features, num_repu_terms, repu_order, eps)
+            # self.activation = PointwisePowerMLP(in_features, k, repu_order, eps)
+            self.activation = PointwiseRELUKAN(in_features, k)
         else:
-            self.activation = nn.ReLU()
+            self.activation = nn.GELU()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.norm is not None:
             out = self.norm(x)
         else:
             out = x
+        
+        if self.pointwise:
+            out = self.activation(out)
         out = self.linear(out)
-        out = self.activation(out)
+        if not self.pointwise:
+            out = self.activation(out)
         if self.residual:
             out = x + out
         return out
@@ -103,25 +130,37 @@ class MLP(nn.Module):
     ):
         super().__init__()
         self.blocks = nn.ModuleList()
-        
-        for i in range(len(dim_list) - 2):
-            block = MLPBlock(
-                dim_list[i],
-                dim_list[i + 1],
-                pointwise=pointwise,
-                num_repu_terms=num_repu_terms,
-                repu_order=repu_order,
-                eps=eps,
-                residual=residual,
-                use_norm=use_norm,
-            )
-            self.blocks.append(block)
-        self.final_linear = nn.Linear(dim_list[-2], dim_list[-1])
+        if pointwise:
+            for i in range(len(dim_list) - 1):
+                block = MLPBlock(
+                    dim_list[i],
+                    dim_list[i + 1],
+                    pointwise=pointwise,
+                    k=num_repu_terms,
+                    repu_order=repu_order,
+                    eps=eps,
+                    residual=residual,
+                    use_norm=use_norm,
+                )
+                self.blocks.append(block)
+        else:
+            for i in range(len(dim_list) - 2):
+                block = MLPBlock(
+                    dim_list[i],
+                    dim_list[i + 1],
+                    pointwise=pointwise,
+                    k=num_repu_terms,
+                    repu_order=repu_order,
+                    eps=eps,
+                    residual=residual,
+                    use_norm=use_norm,
+                )
+                self.blocks.append(block)
+            self.blocks.append(nn.Linear(dim_list[-2], dim_list[-1]))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.blocks:
             x = block(x)
-        x = self.final_linear(x)
         return x
 
 
