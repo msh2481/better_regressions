@@ -37,22 +37,23 @@ class PointwiseRELUKAN(nn.Module):
         super().__init__()
         self.input_size = input_size
         self.k = k
-        # [1, input, k]
-        midpoints = torch.linspace(-3, 3, k).repeat((input_size, 1)).unsqueeze(0)
-        radius = 6 / k
-        self.base_activation = nn.Identity()
-        self.l = nn.Parameter(midpoints - radius)
-        self.r = nn.Parameter(midpoints + radius)
+        
+        quantiles = torch.linspace(1 / k, 1 - 1 / k, k)
+        normal_dist = torch.distributions.Normal(0.0, 1.0)
+        midpoint_values = normal_dist.icdf(quantiles)
+        
+        self.midpoints = nn.Parameter(midpoint_values.repeat((input_size, 1)).unsqueeze(0), requires_grad=False)
+        self.radius = nn.Parameter(torch.tensor(2 / k).repeat(1, input_size, 1))
+        print("Shape:", self.midpoints.shape, self.radius.shape)
         self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base = self.base_activation(x)
         x = x.unsqueeze(2) # [batch, input, k]
-        a = torch.nn.functional.relu(x - self.l)
-        b = torch.nn.functional.relu(self.r - x)
-        h = ((self.r - self.l) / 2) ** 2
+        a = torch.nn.functional.relu(x - (self.midpoints - self.radius))
+        b = torch.nn.functional.relu((self.midpoints + self.radius) - x)
+        h = self.radius ** 2
         ab2 = (a * b / h)**2
-        return base + (ab2 * self.w).sum(dim=-1)
+        return (ab2 * self.w).sum(dim=-1)
 
 def l1_to_l2(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     return torch.linalg.vector_norm(x, p=1) / (torch.linalg.vector_norm(x, p=2) + eps)
@@ -245,8 +246,8 @@ class KAN(nn.Module):
 
 
 def visualize_pointwise_relu_kan(activation: PointwiseRELUKAN, save_path: str) -> None:
-    l = activation.l.squeeze(0).detach().cpu().numpy()
-    r = activation.r.squeeze(0).detach().cpu().numpy()
+    midpoints = activation.midpoints.squeeze(0).detach().cpu().numpy()
+    radius = activation.radius.squeeze(0).detach().cpu().numpy()
     
     input_size = activation.input_size
     x_range = torch.linspace(-3, 3, 300)
@@ -273,8 +274,11 @@ def visualize_pointwise_relu_kan(activation: PointwiseRELUKAN, save_path: str) -
         ax.plot(x_np, y_np, 'k-', linewidth=1.5)
         
         for k_idx in range(activation.k):
-            ax.axvline(l[feat_idx, k_idx], color='blue', linestyle='--', alpha=0.6, linewidth=1)
-            ax.axvline(r[feat_idx, k_idx], color='red', linestyle='--', alpha=0.6, linewidth=1)
+            midpoint = midpoints[feat_idx, k_idx]
+            r = radius[feat_idx, 0]
+            ax.axvline(midpoint, color='gray', linestyle='--', alpha=0.7, linewidth=1)
+            ax.axvline(midpoint - r, color='gray', linestyle='--', alpha=0.1, linewidth=0.5)
+            ax.axvline(midpoint + r, color='gray', linestyle='--', alpha=0.1, linewidth=0.5)
         
         ax.set_xlim(-3, 3)
         ax.set_xlabel('x')

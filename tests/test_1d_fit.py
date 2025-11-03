@@ -91,7 +91,7 @@ def test_pointwise():
     
     # model = kan.PointwiseRELUKAN(input_size=4, k=8)
     # model = kan.MLP(dim_list=[4, 10, 4], residual=False)
-    model = kan.KAN(dim_list=[4, 4], residual=False)
+    model = kan.KAN(dim_list=[4, 4], k=16, residual=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     
