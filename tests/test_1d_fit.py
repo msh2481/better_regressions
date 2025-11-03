@@ -91,7 +91,11 @@ def test_pointwise():
     
     # model = kan.PointwiseRELUKAN(input_size=4, k=8)
     # model = kan.MLP(dim_list=[4, 10, 4], residual=False)
-    model = kan.KAN(dim_list=[4, 4], k=16, residual=False)
+    # model = kan.KAN(dim_list=[4, 64, 4], k=8, residual=False)
+    model = nn.Sequential(
+        kan.RunningRMSNorm(4),
+        kan.PointwiseRELU(input_size=4, k=16)
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     
@@ -100,14 +104,14 @@ def test_pointwise():
     
     model.train()
     max_epochs = 10**9
-    next_save_epoch = 1
+    next_save_epoch = 16
     
     for epoch in range(max_epochs):
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
+            loss = criterion(outputs, targets) #+ model.extra_loss()
             loss.backward()
             optimizer.step()
             

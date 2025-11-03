@@ -74,8 +74,8 @@ class PointwiseRELU(nn.Module):
         return (a * self.w).sum(dim=-1)
     
 
-def l1_to_l2(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    return torch.linalg.vector_norm(x, ord=1) / (torch.linalg.vector_norm(x, ord=2) + eps)
+def l1_to_max(x: torch.Tensor, norm_dim: int, eps: float = 1e-8) -> torch.Tensor:
+    return (x.abs().mean(dim=norm_dim) / (x.abs().max(dim=norm_dim).values + eps)).mean()
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -116,7 +116,7 @@ class MLPBlock(nn.Module):
             return torch.tensor(0.0, device=device)
         
         weights = self.linear.weight
-        return sparsity_weight * l1_to_l2(weights)
+        return sparsity_weight * l1_to_max(weights, norm_dim=1)
 
 
 class KANBlock(nn.Module):
@@ -124,43 +124,43 @@ class KANBlock(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        x_features: int,
         k: int = 4,
         residual: bool = False,
     ):
         super().__init__()
-        self.linear = nn.Linear(in_features + x_features, out_features)
+        self.linear = nn.Linear(in_features, out_features)
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
-        self.norm = RunningRMSNorm(in_features)
-        self.activation = PointwiseRELU(in_features, k)
+        self.norm = RunningRMSNorm(out_features)
+        self.activation = PointwiseRELU(out_features, k)
+        self._last_linear_output = None
     
-    def forward(self, x: torch.Tensor, x_orig: torch.Tensor) -> torch.Tensor:
-        out = self.norm(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.linear(x)
+        if self.training:
+            self._last_linear_output = out
+        else:
+            self._last_linear_output = None
+        
+        out = self.norm(out)
         out = self.activation(out)
-        out = torch.cat([out, x_orig], dim=-1)
-        out = self.linear(out)
         if self.residual:
             out = x + out
         return out
     
-    def extra_loss(
-        self,
-        x_features: int,
-        sparsity_weight: float = 0.0,
-        orig_x_weight: float = 0.0,
-    ) -> torch.Tensor:
+    def extra_loss(self, sparsity_weight: float = 0.0, activation_sparsity_weight: float = 0.0) -> torch.Tensor:
         weights = self.linear.weight
         loss = torch.tensor(0.0, device=weights.device)
         
         if sparsity_weight > 0:
-            loss += sparsity_weight * l1_to_l2(weights)
+            # dim=1 because [out_features, in_features] weights shape (and we want to do loss separately for each output feature)
+            loss += sparsity_weight * l1_to_max(weights, norm_dim=1)
         
-        if orig_x_weight > 0:
-            orig_x_weights = weights[:, -x_features:]
-            loss += orig_x_weight * orig_x_weights.square().mean()
-        
+        if activation_sparsity_weight > 0 and self._last_linear_output is not None:
+            linear_output = self._last_linear_output
+            # dim=1 because [batch, out_features] activation shape
+            loss += activation_sparsity_weight * l1_to_max(linear_output, norm_dim=1)
         
         return loss
 
@@ -208,7 +208,7 @@ class MLP(nn.Module):
                 total_loss = total_loss + block.extra_loss(self.sparsity_weight)
             elif isinstance(block, nn.Linear):
                 weights = block.weight
-                total_loss = total_loss + self.sparsity_weight * l1_to_l2(weights)
+                total_loss = total_loss + self.sparsity_weight * l1_to_max(weights)
         
         return total_loss
 
@@ -219,8 +219,8 @@ class KAN(nn.Module):
         dim_list: list[int],
         k: int = 4,
         residual: bool = False,
-        sparsity_weight: float = 1e-3,
-        orig_x_weight: float = 1e-3,
+        sparsity_weight: float = 1e-2,
+        activation_sparsity_weight: float = 1e-2,
     ):
         super().__init__()
 
@@ -229,25 +229,22 @@ class KAN(nn.Module):
             if min(mid) != max(mid):
                 raise ValueError("When residual is True, the number of features in the middle layers must be the same.")
 
-        self.x_features = dim_list[0]
         self.sparsity_weight = sparsity_weight
-        self.orig_x_weight = orig_x_weight
+        self.activation_sparsity_weight = activation_sparsity_weight
         
         self.blocks = nn.ModuleList()
         for i in range(len(dim_list) - 1):
             block = KANBlock(
                 dim_list[i],
                 dim_list[i + 1],
-                x_features=self.x_features,
                 k=k,
                 residual=residual,
             )
             self.blocks.append(block)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_orig = x
         for block in self.blocks:
-            x = block(x, x_orig)
+            x = block(x)
         return x
     
     def extra_loss(self) -> torch.Tensor:
@@ -256,11 +253,7 @@ class KAN(nn.Module):
         total_loss = total_loss.to(device)
         
         for block in self.blocks:
-            total_loss = total_loss + block.extra_loss(
-                self.x_features,
-                self.sparsity_weight,
-                self.orig_x_weight,
-            )
+            total_loss = total_loss + block.extra_loss(self.sparsity_weight, self.activation_sparsity_weight)
         
         return total_loss
 
