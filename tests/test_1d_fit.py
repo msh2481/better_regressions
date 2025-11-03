@@ -78,9 +78,8 @@ def test_pointwise():
     train_dataset = TensorDataset(x_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
     
-    # model = kan.PointwisePowerMLP(input_size=4, num_repu_terms=8, repu_order=2, eps=0.01)
     # model = kan.PointwiseRELUKAN(input_size=4, k=8)
-    model = kan.MLP(pointwise=False, dim_list=[4, 10, 4], residual=False)
+    model = kan.MLP(dim_list=[4, 10, 4], residual=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     

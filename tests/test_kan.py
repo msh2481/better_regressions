@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from better_regressions.kan import MLP, fit_regression, test_regression
+from better_regressions.kan import MLP, KAN, fit_regression, test_regression
 
 
 def generate_sine_1d(n_samples: int, noise: float = 0.0, seed: int = 42):
@@ -173,10 +173,10 @@ def test_kan_models():
         LR = 1e-2
 
         models_to_test = [
-            ("MLP", MLP(dim_list=[n_features, 32, 1], pointwise=False)),
-            ("MLP (residual)", MLP(dim_list=[n_features, 32, 1], pointwise=False, residual=True)),
-            ("MLP (pointwise)", MLP(dim_list=[n_features, 16, 1], pointwise=True, num_repu_terms=4, repu_order=2)),
-            ("MLP (pointwise+residual)", MLP(dim_list=[n_features, 16, 1], pointwise=True, num_repu_terms=4, repu_order=2, residual=True)),
+            ("MLP", MLP(dim_list=[n_features, 32, 1])),
+            ("MLP (residual)", MLP(dim_list=[n_features, 32, 1], residual=True)),
+            ("KAN", KAN(dim_list=[n_features, 16, 1], k=4)),
+            ("KAN (residual)", KAN(dim_list=[n_features, 16, 1], k=4, residual=True)),
         ]
         
         for model_name, model in models_to_test:
@@ -189,8 +189,8 @@ def test_kan_models():
 
         print(f"  MLP:                     Train RMSE = {results['MLP'][0]:.6f} | Test RMSE = {results['MLP'][1]:.6f}")
         print(f"  MLP (residual):          Train RMSE = {results['MLP (residual)'][0]:.6f} | Test RMSE = {results['MLP (residual)'][1]:.6f}")
-        print(f"  MLP (pointwise):        Train RMSE = {results['MLP (pointwise)'][0]:.6f} | Test RMSE = {results['MLP (pointwise)'][1]:.6f}")
-        print(f"  MLP (pointwise+residual): Train RMSE = {results['MLP (pointwise+residual)'][0]:.6f} | Test RMSE = {results['MLP (pointwise+residual)'][1]:.6f}")
+        print(f"  KAN:                     Train RMSE = {results['KAN'][0]:.6f} | Test RMSE = {results['KAN'][1]:.6f}")
+        print(f"  KAN (residual):          Train RMSE = {results['KAN (residual)'][0]:.6f} | Test RMSE = {results['KAN (residual)'][1]:.6f}")
 
 if __name__ == "__main__":
     test_kan_models()
