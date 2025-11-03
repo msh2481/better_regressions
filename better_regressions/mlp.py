@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 
+
 class RunningRMSNorm(nn.Module):
     def __init__(self, num_features: int, span: int = 1000, eps: float = 1e-8):
         super().__init__()
@@ -25,7 +26,7 @@ class RunningRMSNorm(nn.Module):
             mean_sq = torch.mean(x.detach() ** 2, dim=0)
             self.running_mean_sq = (1 - self.alpha) * self.running_mean_sq + self.alpha * mean_sq
             self.count += 1
-        
+
         bias_correction = 1 - (1 - self.alpha) ** self.count.item()
         adjusted_mean_sq = self.running_mean_sq / (bias_correction + self.eps)
         rms = torch.sqrt(adjusted_mean_sq + self.eps)
@@ -37,30 +38,31 @@ class PointwiseRELUKAN(nn.Module):
         super().__init__()
         self.input_size = input_size
         self.k = k
-        
+
         quantiles = torch.linspace(1 / k, 1 - 1 / k, k)
         normal_dist = torch.distributions.Normal(0.0, 1.0)
         midpoint_values = normal_dist.icdf(quantiles)
-        
+
         self.midpoints = nn.Parameter(midpoint_values.repeat((input_size, 1)).unsqueeze(0), requires_grad=False)
         self.radius = nn.Parameter(torch.tensor(8 / k).repeat(1, input_size, 1), requires_grad=False)
         print("Shape:", self.midpoints.shape, self.radius.shape)
         self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.unsqueeze(2) # [batch, input, k]
+        x = x.unsqueeze(2)  # [batch, input, k]
         a = torch.nn.functional.relu(x - (self.midpoints - self.radius))
         b = torch.nn.functional.relu((self.midpoints + self.radius) - x)
-        h = self.radius ** 2
-        ab2 = (a * b / h)**2
+        h = self.radius**2
+        ab2 = (a * b / h) ** 2
         return (ab2 * self.w).sum(dim=-1)
+
 
 class PointwiseRELU(nn.Module):
     def __init__(self, input_size: int, k: int = 8):
         super().__init__()
         self.input_size = input_size
         self.k = k
-        
+
         quantiles = torch.linspace(1 / k, 1 - 1 / k, k)
         normal_dist = torch.distributions.Normal(0.0, 1.0)
         midpoint_values = normal_dist.icdf(quantiles)
@@ -69,17 +71,17 @@ class PointwiseRELU(nn.Module):
         self.w = nn.Parameter(torch.randn(1, input_size, k) * 0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.unsqueeze(2) # [batch, input, k]
-        a = torch.abs(x - self.midpoints)
-        return (a * self.w).sum(dim=-1)
-    
+        out = x.unsqueeze(2)  # [batch, input, k]
+        a = torch.abs(out - self.midpoints)
+        return 0.1 * x + (a * self.w).sum(dim=-1)
+
 
 class Copy(nn.Module):
     def __init__(self, input_dim: int, k: int):
         super().__init__()
         self.input_dim = input_dim
         self.k = k
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x shape: (batch, input_dim)
         # output shape: (batch, input_dim * k)
@@ -88,6 +90,7 @@ class Copy(nn.Module):
 
 def l1_to_max(x: torch.Tensor, norm_dim: int, eps: float = 1e-8) -> torch.Tensor:
     return (x.abs().mean(dim=norm_dim) / (x.abs().max(dim=norm_dim).values + eps)).mean()
+
 
 class MLPBlock(nn.Module):
     def __init__(
@@ -102,31 +105,31 @@ class MLPBlock(nn.Module):
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
-        
+
         if use_norm:
             self.norm = RunningRMSNorm(in_features)
         else:
             self.norm = None
-        
+
         self.activation = nn.GELU()
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.norm is not None:
             out = self.norm(x)
         else:
             out = x
-        
+
         out = self.linear(out)
         out = self.activation(out)
         if self.residual:
             out = x + out
         return out
-    
+
     def extra_loss(self, sparsity_weight: float = 0.0) -> torch.Tensor:
         if sparsity_weight <= 0:
             device = self.linear.weight.device
             return torch.tensor(0.0, device=device)
-        
+
         weights = self.linear.weight
         return sparsity_weight * l1_to_max(weights, norm_dim=1)
 
@@ -136,23 +139,20 @@ class KANBlock(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        copies: int = 4,
         k: int = 4,
         residual: bool = False,
     ):
         super().__init__()
-        self.copy = Copy(in_features, copies)
-        self.linear = nn.Linear(in_features * copies, out_features)
+        self.linear = nn.Linear(in_features, out_features)
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
         self.norm = RunningRMSNorm(in_features)
-        self.activation = PointwiseRELU(in_features * copies, k)
+        self.activation = PointwiseRELU(in_features, k)
         self._last_linear_output = None
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.norm(x)
-        out = self.copy(out)
         out = self.activation(out)
         out = self.linear(out)
         if self.training:
@@ -162,20 +162,20 @@ class KANBlock(nn.Module):
         if self.residual:
             out = x + out
         return out
-    
+
     def extra_loss(self, sparsity_weight: float = 0.0, activation_sparsity_weight: float = 0.0) -> torch.Tensor:
         weights = self.linear.weight
         loss = torch.tensor(0.0, device=weights.device)
-        
+
         if sparsity_weight > 0:
             # dim=1 because [out_features, in_features] weights shape (and we want to do loss separately for each output feature)
             loss += sparsity_weight * l1_to_max(weights, norm_dim=1)
-        
+
         if activation_sparsity_weight > 0 and self._last_linear_output is not None:
             linear_output = self._last_linear_output
             # dim=1 because [batch, out_features] activation shape
             loss += activation_sparsity_weight * l1_to_max(linear_output, norm_dim=1)
-        
+
         return loss
 
 
@@ -188,14 +188,14 @@ class MLP(nn.Module):
         sparsity_weight: float = 0.0,
     ):
         super().__init__()
-        
+
         if residual and len(dim_list) > 2:
             mid = dim_list[1:-1]
             if min(mid) != max(mid):
                 raise ValueError("When residual is True, the number of features in the middle layers must be the same.")
 
         self.sparsity_weight = sparsity_weight
-        
+
         self.blocks = nn.ModuleList()
         for i in range(len(dim_list) - 2):
             block = MLPBlock(
@@ -211,19 +211,19 @@ class MLP(nn.Module):
         for block in self.blocks:
             x = block(x)
         return x
-    
+
     def extra_loss(self) -> torch.Tensor:
         total_loss = torch.tensor(0.0)
         device = next(self.parameters()).device
         total_loss = total_loss.to(device)
-        
+
         for block in self.blocks:
             if isinstance(block, MLPBlock):
                 total_loss = total_loss + block.extra_loss(self.sparsity_weight)
             elif isinstance(block, nn.Linear):
                 weights = block.weight
                 total_loss = total_loss + self.sparsity_weight * l1_to_max(weights, norm_dim=1)
-        
+
         return total_loss
 
 
@@ -246,142 +246,123 @@ class KAN(nn.Module):
 
         self.sparsity_weight = sparsity_weight
         self.activation_sparsity_weight = activation_sparsity_weight
-        
+        self.copy = Copy(dim_list[0], copies)
         self.blocks = nn.ModuleList()
-        for i in range(len(dim_list) - 1):
+        copied_dim_list = [dim_list[0] * copies] + dim_list[1:]
+        for i in range(len(copied_dim_list) - 1):
             block = KANBlock(
-                dim_list[i],
-                dim_list[i + 1],
+                copied_dim_list[i],
+                copied_dim_list[i + 1],
                 k=k,
-                copies=copies,
                 residual=residual,
             )
             self.blocks.append(block)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.copy(x)
         for block in self.blocks:
             x = block(x)
         return x
-    
+
     def extra_loss(self) -> torch.Tensor:
         total_loss = torch.tensor(0.0)
         device = next(self.parameters()).device
         total_loss = total_loss.to(device)
-        
+
         for block in self.blocks:
             total_loss = total_loss + block.extra_loss(self.sparsity_weight, self.activation_sparsity_weight)
-        
+
         return total_loss
 
 
-def visualize_pointwise_relu_kan(block: 'KANBlock', save_path: str) -> None:
+def visualize_pointwise_relu_kan(block: "KANBlock", save_path: str) -> None:
     activation = block.activation
     linear = block.linear
-    copies = block.copy.k
-    in_features = block.copy.input_dim
-    
+    input_size = activation.input_size
+
     midpoints = activation.midpoints.squeeze(0).detach().cpu().numpy()
-    
-    # Compute weight norms for each copy
+
+    # Compute weight norms for each activation feature (outgoing weights)
     weight_norms = []
-    for feat_idx in range(in_features):
-        feat_norms = []
-        for copy_idx in range(copies):
-            copy_input_idx = feat_idx * copies + copy_idx
-            norm = torch.norm(linear.weight[:, copy_input_idx]).item()
-            feat_norms.append(norm)
-        weight_norms.append(feat_norms)
-    
+    for feat_idx in range(input_size):
+        norm = torch.norm(linear.weight[:, feat_idx]).item()
+        weight_norms.append(norm)
+
+    # Normalize weight norms globally across all activations
+    if weight_norms:
+        max_norm = max(weight_norms)
+    else:
+        max_norm = 1.0
+
     x_range = torch.linspace(-3, 3, 300)
-    
-    n = int(math.sqrt(in_features))
-    m = math.ceil(in_features / n)
-    
+
+    n = int(math.sqrt(input_size))
+    m = math.ceil(input_size / n)
+
     fig, axes = plt.subplots(n, m, figsize=(4 * m, 3 * n))
-    if in_features == 1:
+    if input_size == 1:
         axes = np.array([axes])
     axes = axes.flatten()
-    
+
     with torch.no_grad():
         activation.eval()
-        for feat_idx in range(in_features):
+        for feat_idx in range(input_size):
             ax = axes[feat_idx]
             x_np = x_range.numpy()
-            
-            # Compute min/max norms for this feature
-            feat_norms = weight_norms[feat_idx]
-            if feat_norms:
-                min_norm = min(feat_norms)
-                max_norm = max(feat_norms)
-                norm_range = max_norm - min_norm if max_norm > min_norm else 1.0
-            else:
-                min_norm = 0
-                norm_range = 1.0
-            
-            # Plot each copy
-            for copy_idx in range(copies):
-                copy_input_idx = feat_idx * copies + copy_idx
-                
-                # Create input tensor: only the copy_input_idx position varies
-                x_tensor = torch.zeros(len(x_range), in_features * copies)
-                x_tensor[:, copy_input_idx] = x_range
-                
-                y = activation(x_tensor)
-                y_np = y[:, copy_input_idx].cpu().numpy()
-                
-                # Set alpha based on weight norm (normalized per-feature)
-                norm = weight_norms[feat_idx][copy_idx]
-                alpha = 0.01 + 0.99 * ((norm - min_norm) / norm_range) if norm_range > 0 else 0.5
-                
-                ax.plot(x_np, y_np, 'k-', linewidth=1.5, alpha=alpha, label=f'#{copy_idx}: {norm:.2f}')
-                
-                # Plot midpoints for this copy
-                for k_idx in range(activation.k):
-                    midpoint = midpoints[copy_input_idx, k_idx]
-                    ax.axvline(midpoint, color='gray', linestyle='--', alpha=0.3, linewidth=0.5)
+
+            x_tensor = torch.zeros(len(x_range), input_size)
+            x_tensor[:, feat_idx] = x_range
+            y = activation(x_tensor)
+            y_np = y[:, feat_idx].cpu().numpy()
+
+            # Set alpha based on weight norm (normalized globally)
+            norm = weight_norms[feat_idx]
+            alpha = 0.01 + 0.99 * (norm / max_norm) if max_norm > 0 else 0.5
+
+            ax.plot(x_np, y_np, "k-", linewidth=1.5, alpha=alpha)
+
+            # Plot midpoints
+            for k_idx in range(activation.k):
+                midpoint = midpoints[feat_idx, k_idx]
+                ax.axvline(midpoint, color="gray", linestyle="--", alpha=0.3, linewidth=0.5)
 
             ax.set_xlim(-3, 3)
-            ax.set_xlabel('x')
-            ax.set_ylabel(f'Activation')
-            ax.set_title(f'Feature {feat_idx}')
-            ax.legend(loc='upper right')
+            ax.set_title(f"#{feat_idx}: {norm:.3f}")
             ax.grid(True, alpha=0.3)
-    
-    for feat_idx in range(in_features, len(axes)):
-        axes[feat_idx].axis('off')
-    
+
+    for feat_idx in range(input_size, len(axes)):
+        axes[feat_idx].axis("off")
+
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
 
 
 def visualize_linear(linear: nn.Linear, save_path: str) -> None:
     weights = linear.weight.detach().cpu().numpy()
-    
+
     fig, ax = plt.subplots(figsize=(max(8, weights.shape[1] * 0.5), max(6, weights.shape[0] * 0.5)))
-    im = ax.imshow(weights, aspect='auto', cmap='RdBu_r', vmin=-weights.std()*3, vmax=weights.std()*3)
-    
+    im = ax.imshow(weights, aspect="auto", cmap="RdBu_r", vmin=-weights.std() * 3, vmax=weights.std() * 3)
+
     for i in range(weights.shape[0]):
         for j in range(weights.shape[1]):
-            text = ax.text(j, i, f'{weights[i, j]:.2f}', ha='center', va='center', 
-                          color='black' if abs(weights[i, j]) < weights.std() else 'white',
-                          fontsize=8)
-    
-    ax.set_xlabel('Input feature')
-    ax.set_ylabel('Output feature')
-    ax.set_title('Linear Weights')
+            text = ax.text(j, i, f"{weights[i, j]:.2f}", ha="center", va="center", color="black" if abs(weights[i, j]) < weights.std() else "white", fontsize=8)
+
+    ax.set_xlabel("Input feature")
+    ax.set_ylabel("Output feature")
+    ax.set_title("Linear Weights")
     ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    
+
     plt.colorbar(im, ax=ax)
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
 
 
 def visualize_kan_block(block: KANBlock, layer_idx: int, folder_name: str) -> None:
-    visualize_pointwise_relu_kan(block, os.path.join(folder_name, f'layer_{layer_idx}_activations.png'))
-    visualize_linear(block.linear, os.path.join(folder_name, f'layer_{layer_idx}_weights.png'))
+    visualize_pointwise_relu_kan(block, os.path.join(folder_name, f"layer_{layer_idx}_activations.png"))
+    visualize_linear(block.linear, os.path.join(folder_name, f"layer_{layer_idx}_weights.png"))
 
 
 def visualize_kan(model: KAN, folder_name: str) -> None:
@@ -429,11 +410,11 @@ def fit_regression(
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
-            if hasattr(model, 'extra_loss'):
+
+            if hasattr(model, "extra_loss"):
                 extra = model.extra_loss()
                 loss = loss + extra
-            
+
             loss.backward()
 
             if clip_grad_norm is not None:
@@ -511,4 +492,3 @@ def test_regression(
     if use_rmse:
         return float(math.sqrt(avg_loss))
     return float(avg_loss)
-

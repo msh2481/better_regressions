@@ -93,16 +93,16 @@ def visualize_predictions(
     model.eval()
     device = next(model.parameters()).device
     X_test = X_test.to(device)
-    
+
     with torch.no_grad():
         y_pred = model(X_test)
-    
+
     X_test = X_test.cpu().numpy()
     y_test = y_test.cpu().numpy()
     y_pred = y_pred.cpu().numpy()
-    
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    
+
     if n_features == 1:
         idx = np.argsort(X_test[:, 0])
         ax.plot(X_test[idx, 0], y_test[idx, 0], "b-", label="Ground Truth", alpha=0.7, linewidth=2)
@@ -121,10 +121,10 @@ def visualize_predictions(
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.set_aspect("equal")
-    
+
     title = f"{func_name} - {model_name}"
     ax.set_title(title)
-    
+
     filename = f"{func_name.replace(' ', '_').replace('+', 'plus')}_{model_name.replace(' ', '_').replace('(', '').replace(')', '').replace('+', 'plus')}.png"
     filepath = os.path.join(output_dir, filename)
     plt.tight_layout()
@@ -158,7 +158,7 @@ def test_kan_models():
 
     for func_name, func_gen, n_features in functions:
         print(f"\n{func_name} (dim={n_features}):")
-        
+
         X_train, y_train = func_gen(n_train, noise=noise_level, seed=42)
         X_val, y_val = func_gen(n_val, noise=noise_level, seed=43)
         X_test, y_test = func_gen(n_test, noise=0.0, seed=44)
@@ -175,10 +175,10 @@ def test_kan_models():
         models_to_test = [
             ("MLP", MLP(dim_list=[n_features, 32, 1])),
             ("MLP (residual)", MLP(dim_list=[n_features, 32, 1], residual=True)),
-            ("KAN", KAN(dim_list=[n_features, 32, 32, 32, 1], k=16)),
-            ("KAN (residual)", KAN(dim_list=[n_features, 32, 32, 32, 1], k=16, residual=True)),
+            ("KAN", KAN(dim_list=[n_features, 32, 1], copies=8, k=8)),
+            ("KAN (residual)", KAN(dim_list=[n_features, 32, 1], k=8, copies=8, residual=True)),
         ]
-        
+
         for model_name, model in models_to_test:
             optimizer = torch.optim.Adam(model.parameters(), lr=LR)
             fit_regression(model, criterion, optimizer, train_loader, val_loader, max_epochs=max_epochs)
@@ -191,6 +191,7 @@ def test_kan_models():
         print(f"  MLP (residual):          Train RMSE = {results['MLP (residual)'][0]:.6f} | Test RMSE = {results['MLP (residual)'][1]:.6f}")
         print(f"  KAN:                     Train RMSE = {results['KAN'][0]:.6f} | Test RMSE = {results['KAN'][1]:.6f}")
         print(f"  KAN (residual):          Train RMSE = {results['KAN (residual)'][0]:.6f} | Test RMSE = {results['KAN (residual)'][1]:.6f}")
+
 
 if __name__ == "__main__":
     test_kan_models()
