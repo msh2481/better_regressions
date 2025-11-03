@@ -274,51 +274,80 @@ class KAN(nn.Module):
         return total_loss
 
 
-def visualize_pointwise_relu_kan(activation: PointwiseRELUKAN, save_path: str) -> None:
-    midpoints = activation.midpoints.squeeze(0).detach().cpu().numpy()
-    try:
-        radius = activation.radius.squeeze(0).detach().cpu().numpy()
-    except:
-        radius = (torch.ones_like(activation.midpoints) * 1000).squeeze(0).detach().cpu().numpy()
+def visualize_pointwise_relu_kan(block: 'KANBlock', save_path: str) -> None:
+    activation = block.activation
+    linear = block.linear
+    copies = block.copy.k
+    in_features = block.copy.input_dim
     
-    input_size = activation.input_size
+    midpoints = activation.midpoints.squeeze(0).detach().cpu().numpy()
+    
+    # Compute weight norms for each copy
+    weight_norms = []
+    for feat_idx in range(in_features):
+        feat_norms = []
+        for copy_idx in range(copies):
+            copy_input_idx = feat_idx * copies + copy_idx
+            norm = torch.norm(linear.weight[:, copy_input_idx]).item()
+            feat_norms.append(norm)
+        weight_norms.append(feat_norms)
+    
     x_range = torch.linspace(-3, 3, 300)
     
-    n = int(math.sqrt(input_size))
-    m = math.ceil(input_size / n)
+    n = int(math.sqrt(in_features))
+    m = math.ceil(in_features / n)
     
     fig, axes = plt.subplots(n, m, figsize=(4 * m, 3 * n))
-    if input_size == 1:
+    if in_features == 1:
         axes = np.array([axes])
     axes = axes.flatten()
     
-    for feat_idx in range(input_size):
-        ax = axes[feat_idx]
-        x_np = x_range.numpy()
-        
-        x_tensor = torch.zeros(len(x_range), input_size)
-        x_tensor[:, feat_idx] = x_range
-        with torch.no_grad():
-            activation.eval()
-            y = activation(x_tensor)
-            y_np = y[:, feat_idx].cpu().numpy()
-        
-        ax.plot(x_np, y_np, 'k-', linewidth=1.5)
-        
-        for k_idx in range(activation.k):
-            midpoint = midpoints[feat_idx, k_idx]
-            r = radius[feat_idx, 0]
-            ax.axvline(midpoint, color='gray', linestyle='--', alpha=0.7, linewidth=1)
-            ax.axvline(midpoint - r, color='gray', linestyle='--', alpha=0.1, linewidth=0.5)
-            ax.axvline(midpoint + r, color='gray', linestyle='--', alpha=0.1, linewidth=0.5)
-        
-        ax.set_xlim(-3, 3)
-        ax.set_xlabel('x')
-        ax.set_ylabel(f'Feature {feat_idx}')
-        ax.set_title(f'Feature {feat_idx}')
-        ax.grid(True, alpha=0.3)
+    with torch.no_grad():
+        activation.eval()
+        for feat_idx in range(in_features):
+            ax = axes[feat_idx]
+            x_np = x_range.numpy()
+            
+            # Compute min/max norms for this feature
+            feat_norms = weight_norms[feat_idx]
+            if feat_norms:
+                min_norm = min(feat_norms)
+                max_norm = max(feat_norms)
+                norm_range = max_norm - min_norm if max_norm > min_norm else 1.0
+            else:
+                min_norm = 0
+                norm_range = 1.0
+            
+            # Plot each copy
+            for copy_idx in range(copies):
+                copy_input_idx = feat_idx * copies + copy_idx
+                
+                # Create input tensor: only the copy_input_idx position varies
+                x_tensor = torch.zeros(len(x_range), in_features * copies)
+                x_tensor[:, copy_input_idx] = x_range
+                
+                y = activation(x_tensor)
+                y_np = y[:, copy_input_idx].cpu().numpy()
+                
+                # Set alpha based on weight norm (normalized per-feature)
+                norm = weight_norms[feat_idx][copy_idx]
+                alpha = 0.01 + 0.99 * ((norm - min_norm) / norm_range) if norm_range > 0 else 0.5
+                
+                ax.plot(x_np, y_np, 'k-', linewidth=1.5, alpha=alpha, label=f'#{copy_idx}: {norm:.2f}')
+                
+                # Plot midpoints for this copy
+                for k_idx in range(activation.k):
+                    midpoint = midpoints[copy_input_idx, k_idx]
+                    ax.axvline(midpoint, color='gray', linestyle='--', alpha=0.3, linewidth=0.5)
+
+            ax.set_xlim(-3, 3)
+            ax.set_xlabel('x')
+            ax.set_ylabel(f'Activation')
+            ax.set_title(f'Feature {feat_idx}')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
     
-    for feat_idx in range(input_size, len(axes)):
+    for feat_idx in range(in_features, len(axes)):
         axes[feat_idx].axis('off')
     
     plt.tight_layout()
@@ -351,7 +380,7 @@ def visualize_linear(linear: nn.Linear, save_path: str) -> None:
 
 
 def visualize_kan_block(block: KANBlock, layer_idx: int, folder_name: str) -> None:
-    visualize_pointwise_relu_kan(block.activation, os.path.join(folder_name, f'layer_{layer_idx}_activations.png'))
+    visualize_pointwise_relu_kan(block, os.path.join(folder_name, f'layer_{layer_idx}_activations.png'))
     visualize_linear(block.linear, os.path.join(folder_name, f'layer_{layer_idx}_weights.png'))
 
 
