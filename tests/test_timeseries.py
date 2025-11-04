@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from better_regressions.timeseries import AdaptiveEMA, ema, fit_regression
+from better_regressions.timeseries import AdaptiveEMA, MLPEMA, ema, fit_regression, test_regression
 
 
 def test_timeseries():
@@ -125,7 +125,48 @@ def test_fit_adaptive_ema():
     print(f"Feature 2 (ema span=5, time space): halflife ~ 5.0, power ~ 1.0 (uses dt^1=dt)")
 
 
+def test_fit_mlpema():
+    torch.manual_seed(42)
+    
+    batch_size, num_features, seq_len = 32, 1, 100
+    x = torch.randn(batch_size, num_features, seq_len)
+    t = torch.cumsum(torch.ones_like(x) * 0.1, dim=-1)
+    
+    dt = torch.cat([torch.ones_like(t[:, :, :1]), torch.diff(t, dim=-1)], dim=-1)
+    halflife = torch.tensor([1000.0])
+    y = ema(x**2, dt, halflife)
+    
+    train_size = int(0.8 * batch_size)
+    x_train, x_val = x[:train_size], x[train_size:]
+    t_train, t_val = t[:train_size], t[train_size:]
+    y_train, y_val = y[:train_size], y[train_size:]
+    
+    train_dataset = TensorDataset(x_train, t_train, y_train)
+    val_dataset = TensorDataset(x_val, t_val, y_val)
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False)
+    
+    model = MLPEMA(
+        num_features=1,
+        dim_lists=[[1, 32, 1]],
+        halflife_bounds=(0.1, 10000.0),
+        out_features=1
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    
+    print("\nFitting MLPEMA to y = ema(x^2, halflife=1000)")
+    print(f"Before training - Validation RMSE: {test_regression(model, val_loader, use_rmse=True):.6f}")
+    
+    best_loss, best_epoch = fit_regression(
+        model, optimizer, train_loader, val_loader, max_epochs=200, use_rmse=True
+    )
+    
+    print(f"\nBest validation loss: {best_loss:.6f} at epoch {best_epoch}")
+    print(f"Final validation RMSE: {test_regression(model, val_loader, use_rmse=True):.6f}")
+
+
 if __name__ == "__main__":
     # test_timeseries()
     # test_adaptive_ema()
-    test_fit_adaptive_ema()
+    # test_fit_adaptive_ema()
+    test_fit_mlpema()

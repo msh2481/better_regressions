@@ -7,6 +7,8 @@ from jaxtyping import Float
 from torch import Tensor
 from tqdm import tqdm
 
+from better_regressions.mlp import MLP
+
 
 def ema(x: Float[Tensor, "... seq"], dt: Float[Tensor, "... seq"], halflife: Float[Tensor, "..."]) -> Float[Tensor, "... seq"]:
     assert x.ndim >= 2, "x must have at least 2 dimensions"
@@ -58,6 +60,64 @@ class AdaptiveEMA(nn.Module):
         dt_powered = dt_normalized ** self.power.view(1, num_features, 1)
         halflife = torch.exp(self.log_halflife.expand(1, batch_size, num_features).flatten())
         return ema(x, dt_powered, halflife)
+
+
+class FeaturewiseMLP(nn.Module):
+    def __init__(self, num_features: int, dim_list: list[int], **mlp_kwargs):
+        super().__init__()
+        self.num_features = num_features
+        self.mlp = MLP(dim_list, **mlp_kwargs)
+
+    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+        batch_size, num_features, seq_len = x.shape
+        x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
+        y_flat = self.mlp(x_flat)
+        y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
+        return y
+
+
+class MLPEMA(nn.Module):
+    def __init__(
+        self,
+        num_features: int,
+        dim_lists: list[list[int]],
+        halflife_bounds: tuple[float, float],
+        out_features: int,
+        **mlp_kwargs
+    ):
+        super().__init__()
+        self.num_features = num_features
+        self.blocks = nn.ModuleList()
+        
+        current_features = num_features
+        for dim_list in dim_lists:
+            mlp = FeaturewiseMLP(current_features, dim_list, **mlp_kwargs)
+            self.blocks.append(mlp)
+            current_features = dim_list[-1] if dim_list else current_features
+            ema = AdaptiveEMA(current_features, halflife_bounds)
+            self.blocks.append(ema)
+        self.final_linear = nn.Linear(current_features, out_features)
+
+    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+        for block in self.blocks:
+            x = block(x, t)
+        
+        batch_size, num_features, seq_len = x.shape
+        x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
+        y_flat = self.final_linear(x_flat)
+        y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
+        return y
+
+    def extra_loss(self) -> torch.Tensor:
+        total_loss = torch.tensor(0.0)
+        device = next(self.parameters()).device
+        total_loss = total_loss.to(device)
+        
+        for block in self.blocks:
+            if isinstance(block, FeaturewiseMLP) and hasattr(block.mlp, "extra_loss"):
+                total_loss = total_loss + block.mlp.extra_loss()
+        
+        return total_loss
 
 
 class LRScheduler(Protocol):
