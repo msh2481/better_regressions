@@ -32,18 +32,30 @@ def ema(x: Float[Tensor, "... seq"], dt: Float[Tensor, "... seq"], halflife: Flo
 
 
 class AdaptiveEMA(nn.Module):
-    def __init__(self, num_features: int, halflife_bounds: tuple[float, float], logit_power_init: float = 0.0):
+    def __init__(self, num_features: int, halflife_bounds: tuple[float, float]):
         super().__init__()
         self.num_features = num_features
         log_halflife_min = torch.log(torch.tensor(halflife_bounds[0]))
         log_halflife_max = torch.log(torch.tensor(halflife_bounds[1]))
         self.log_halflife = nn.Parameter(torch.rand(num_features) * (log_halflife_max - log_halflife_min) + log_halflife_min)
-        self.logit_power = nn.Parameter(torch.tensor(logit_power_init))
+        self.power = nn.Parameter(torch.full((num_features,), 0.5))
+        self.register_buffer("running_sum_dt", torch.zeros(num_features))
+        self.register_buffer("dt_count", torch.tensor(0.0))
 
     def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+        self.power.data.clamp_(1e-3, 1.0 - 1e-3)
         batch_size, num_features, seq_len = x.shape
         dt = torch.cat([torch.ones_like(t[:, :, :1]), torch.diff(t, dim=-1)], dim=-1)
-        dt_powered = dt ** torch.sigmoid(self.logit_power)
+        
+        if self.training:
+            sum_dt = torch.sum(dt.detach(), dim=(0, 2))
+            self.running_sum_dt += sum_dt
+            self.dt_count += batch_size * seq_len
+        
+        mean_dt = self.running_sum_dt / (self.dt_count + 1e-10)
+        dt_normalized = dt / mean_dt.view(1, num_features, 1)
+        
+        dt_powered = dt_normalized ** self.power.view(1, num_features, 1)
         halflife = torch.exp(self.log_halflife.expand(1, batch_size, num_features).flatten())
         return ema(x, dt_powered, halflife)
 
