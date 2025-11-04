@@ -148,8 +148,8 @@ def test_fit_mlpema():
     
     model = MLPEMA(
         num_features=1,
-        dim_lists=[[1, 32, 1]],
-        halflife_bounds=(0.1, 10000.0),
+        dim_lists=[[1, 32, 4]],
+        halflife_bounds=(0.1, 100.0),
         out_features=1
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)

@@ -97,6 +97,7 @@ class MLPEMA(nn.Module):
             ema = AdaptiveEMA(current_features, halflife_bounds)
             self.blocks.append(ema)
         self.final_linear = nn.Linear(current_features, out_features)
+        self.final_ema = AdaptiveEMA(out_features, halflife_bounds)
 
     def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
         for block in self.blocks:
@@ -106,6 +107,7 @@ class MLPEMA(nn.Module):
         x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
         y_flat = self.final_linear(x_flat)
         y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
+        y = self.final_ema(y, t)
         return y
 
     def extra_loss(self) -> torch.Tensor:
