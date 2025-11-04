@@ -3,6 +3,7 @@ from typing import Protocol
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor
 from tqdm import tqdm
@@ -10,28 +11,26 @@ from tqdm import tqdm
 from better_regressions.mlp import MLP
 
 
-@torch.jit.script
-def _ema_impl(x_flat: torch.Tensor, dt_flat: torch.Tensor, halflife: torch.Tensor) -> torch.Tensor:
+def _ema_impl(x_flat: torch.Tensor, halflife: torch.Tensor, max_size: int = 100) -> torch.Tensor:
+    batch_features, seq_len = x_flat.shape
     alpha = 0.5 ** (1 / halflife)
-    result = torch.zeros_like(x_flat)
-    weighted_sum = torch.zeros_like(x_flat[:, 0])
-    total_coeff = torch.zeros_like(x_flat[:, 0])
-    seq_len = x_flat.shape[1]
-    for i in range(seq_len):
-        decay = alpha ** dt_flat[:, i]
-        weighted_sum = weighted_sum * decay + x_flat[:, i]
-        total_coeff = total_coeff * decay + 1.0
-        result[:, i] = weighted_sum / (total_coeff + 1e-10)
+    
+    kernel_size = min(max_size + 1, seq_len)
+    arange = torch.arange(kernel_size, device=x_flat.device, dtype=x_flat.dtype).flip(0)
+    kernel_weights = (alpha.unsqueeze(1) ** arange.unsqueeze(0)).unsqueeze(1)
+    kernel = kernel_weights
+    
+    x_reshaped = x_flat.unsqueeze(0)
+    result = F.conv1d(x_reshaped, kernel, padding=kernel_size - 1, groups=batch_features)
+    result = result.squeeze(0)[:, :seq_len]
     return result
 
-def ema(x: Float[Tensor, "... seq"], dt: Float[Tensor, "... seq"], halflife: Float[Tensor, "..."]) -> Float[Tensor, "... seq"]:
+def ema(x: Float[Tensor, "... seq"], halflife: Float[Tensor, "..."]) -> Float[Tensor, "... seq"]:
     assert x.ndim >= 2, "x must have at least 2 dimensions"
-    assert x.shape == dt.shape, "x and dt must have the same shape"
     original_shape = x.shape
     x_flat = x.flatten(0, -2)
-    dt_flat = dt.flatten(0, -2)
     halflife_expanded = halflife.expand(x_flat.shape[:-1]).flatten()
-    result_flat = _ema_impl(x_flat, dt_flat, halflife_expanded)
+    result_flat = _ema_impl(x_flat, halflife_expanded)
     return result_flat.reshape(original_shape)
 
 
@@ -42,28 +41,11 @@ class AdaptiveEMA(nn.Module):
         log_halflife_min = torch.log(torch.tensor(halflife_bounds[0]))
         log_halflife_max = torch.log(torch.tensor(halflife_bounds[1]))
         self.log_halflife = nn.Parameter(torch.rand(num_features) * (log_halflife_max - log_halflife_min) + log_halflife_min)
-        self.power = nn.Parameter(torch.full((num_features,), 0.5))
-        self.register_buffer("running_sum_dt", torch.zeros(num_features))
-        self.register_buffer("dt_count", torch.tensor(0.0))
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
-        self.power.data.clamp_(1e-3, 1.0 - 1e-3)
+    def forward(self, x: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
         batch_size, num_features, seq_len = x.shape
-        dt = torch.cat([torch.ones_like(t[:, :1]), torch.diff(t, dim=-1)], dim=-1)
-        dt = dt.unsqueeze(1).expand(batch_size, num_features, seq_len)
-        
-        if self.training:
-            sum_dt = torch.sum(dt.detach(), dim=(0, 2))
-            self.running_sum_dt += sum_dt
-            self.dt_count += batch_size * seq_len
-        
-        eps = 1e-6
-        mean_dt = (self.running_sum_dt + eps) / (self.dt_count + eps)
-        dt_normalized = dt / mean_dt.view(1, num_features, 1)
-        
-        dt_powered = dt_normalized ** self.power.view(1, num_features, 1)
-        halflife = torch.exp(self.log_halflife.expand(1, batch_size, num_features).flatten())
-        return ema(x, dt_powered, halflife)
+        halflife = torch.exp(self.log_halflife.view(1, -1).expand(batch_size, -1).flatten())
+        return ema(x, halflife)
 
 
 class FeaturewiseMLP(nn.Module):
@@ -72,7 +54,7 @@ class FeaturewiseMLP(nn.Module):
         self.num_features = num_features
         self.mlp = MLP(dim_list, **mlp_kwargs)
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
+    def forward(self, x: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
         batch_size, num_features, seq_len = x.shape
         x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
         y_flat = self.mlp(x_flat)
@@ -110,7 +92,7 @@ class MLPEMA(nn.Module):
         
         self.final_ema = AdaptiveEMA(out_features, halflife_bounds)
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
+    def forward(self, x: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
         batch_size, _, seq_len = x.shape
         
         x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, self.num_features)
@@ -118,14 +100,14 @@ class MLPEMA(nn.Module):
         y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
         
         for block, skip_linear in zip(self.blocks, self.skip_linears[1:]):
-            x = block(x, t)
+            x = block(x)
             batch_size, num_features, seq_len = x.shape
             x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
             skip_y_flat = skip_linear(x_flat)
             skip_y = skip_y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
             y = y + skip_y
         
-        y = self.final_ema(y, t)
+        y = self.final_ema(y)
         return y
 
     def extra_loss(self) -> torch.Tensor:
@@ -172,9 +154,9 @@ def fit_regression(
 
     for epoch in pbar:
         model.train()
-        for x, t, targets in train_loader:
-            x, t, targets = x.to(device), t.to(device), targets.to(device)
-            outputs = model(x, t)
+        for x, targets in train_loader:
+            x, targets = x.to(device), targets.to(device)
+            outputs = model(x)
 
             optimizer.zero_grad()
             loss = ((outputs - targets) ** 2).mean()
@@ -194,9 +176,9 @@ def fit_regression(
         train_loss = 0.0
         train_batches = 0
         with torch.no_grad():
-            for x, t, targets in train_loader:
-                x, t, targets = x.to(device), t.to(device), targets.to(device)
-                outputs = model(x, t)
+            for x, targets in train_loader:
+                x, targets = x.to(device), targets.to(device)
+                outputs = model(x)
                 loss = ((outputs - targets) ** 2).mean()
                 train_loss += loss.item()
                 train_batches += 1
@@ -204,9 +186,9 @@ def fit_regression(
         val_loss = 0.0
         val_batches = 0
         with torch.no_grad():
-            for x, t, targets in val_loader:
-                x, t, targets = x.to(device), t.to(device), targets.to(device)
-                outputs = model(x, t)
+            for x, targets in val_loader:
+                x, targets = x.to(device), targets.to(device)
+                outputs = model(x)
                 loss = ((outputs - targets) ** 2).mean()
                 val_loss += loss.item()
                 val_batches += 1
@@ -245,9 +227,9 @@ def test_regression(
     n_batches = 0
 
     with torch.no_grad():
-        for x, t, targets in test_loader:
-            x, t, targets = x.to(device), t.to(device), targets.to(device)
-            outputs = model(x, t)
+        for x, targets in test_loader:
+            x, targets = x.to(device), targets.to(device)
+            outputs = model(x)
             loss = ((outputs - targets) ** 2).mean()
             total_loss += loss.item()
             n_batches += 1
