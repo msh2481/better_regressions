@@ -44,17 +44,19 @@ class AdaptiveEMA(nn.Module):
         self.register_buffer("running_sum_dt", torch.zeros(num_features))
         self.register_buffer("dt_count", torch.tensor(0.0))
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
         self.power.data.clamp_(1e-3, 1.0 - 1e-3)
         batch_size, num_features, seq_len = x.shape
-        dt = torch.cat([torch.ones_like(t[:, :, :1]), torch.diff(t, dim=-1)], dim=-1)
+        dt = torch.cat([torch.ones_like(t[:, :1]), torch.diff(t, dim=-1)], dim=-1)
+        dt = dt.unsqueeze(1).expand(batch_size, num_features, seq_len)
         
         if self.training:
             sum_dt = torch.sum(dt.detach(), dim=(0, 2))
             self.running_sum_dt += sum_dt
             self.dt_count += batch_size * seq_len
         
-        mean_dt = self.running_sum_dt / (self.dt_count + 1e-10)
+        eps = 1e-6
+        mean_dt = (self.running_sum_dt + eps) / (self.dt_count + eps)
         dt_normalized = dt / mean_dt.view(1, num_features, 1)
         
         dt_powered = dt_normalized ** self.power.view(1, num_features, 1)
@@ -68,7 +70,7 @@ class FeaturewiseMLP(nn.Module):
         self.num_features = num_features
         self.mlp = MLP(dim_list, **mlp_kwargs)
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
         batch_size, num_features, seq_len = x.shape
         x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
         y_flat = self.mlp(x_flat)
@@ -99,7 +101,7 @@ class MLPEMA(nn.Module):
         self.final_linear = nn.Linear(current_features, out_features)
         self.final_ema = AdaptiveEMA(out_features, halflife_bounds)
 
-    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
+    def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
         for block in self.blocks:
             x = block(x, t)
         
