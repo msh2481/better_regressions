@@ -171,33 +171,35 @@ def test_fit_mlpema_hard():
     torch.manual_seed(42)
     np.random.seed(42)
     
-    batch_size, num_features, seq_len = 64, 3, 200
+    batch_size, num_features, seq_len = 1000, 3, 200
     
     x_list = []
     t_list = []
     y_list = []
     
     for b in range(batch_size):
+        x1_bias = np.random.randn() * 10
+        x1_scale = np.exp(np.linspace(0.0, 2.0, seq_len))
         df = pd.DataFrame({
-            'x1': np.random.randn(seq_len),
+            'x1': x1_bias + np.random.randn(seq_len) * x1_scale,
             'x2': np.random.randn(seq_len),
             'x3': np.random.randn(seq_len),
         })
         df['t'] = np.cumsum(np.exp(np.random.randn(seq_len)) * 0.1)
         
-        df['y1'] = df['x1'].rolling(window=20, min_periods=1).std()
+        df['y1'] = df['x1'].rolling(window=1000, min_periods=1).var().fillna(0.0)
         
         df['x2x3'] = df['x2'] * df['x3']
         dt = df['t'].diff().fillna(1.0)
         halflife_val = 10.0
         alpha = 0.5 ** (1 / halflife_val)
         df['ema_x2x3'] = df['x2x3'].ewm(alpha=alpha, adjust=True).mean()
-        df['y2'] = df['x1'] + df['ema_x2x3']
+        df['y2'] = (df['x1'] + df['ema_x2x3']) * 0
         
         df['ema_x2'] = df['x2'].ewm(alpha=alpha, adjust=True).mean()
         df['ema_x3'] = df['x3'].ewm(alpha=alpha, adjust=True).mean()
         df['ema_x2x3_2'] = df['ema_x2'] * df['ema_x3']
-        df['y3'] = df['ema_x2x3_2'].ewm(alpha=alpha, adjust=True).mean()
+        df['y3'] = df['ema_x2x3_2'].ewm(alpha=alpha, adjust=True).mean() * 0
         
         x_list.append(df[['x1', 'x2', 'x3']].values.T)
         t_list.append(df['t'].values)
@@ -207,6 +209,15 @@ def test_fit_mlpema_hard():
     t = torch.tensor(np.stack(t_list), dtype=torch.float32)
     y = torch.tensor(np.stack(y_list), dtype=torch.float32)
     
+    print(f"\nChecking for NaNs in datasets:")
+    print(f"x has NaN: {torch.isnan(x).any().item()}")
+    print(f"t has NaN: {torch.isnan(t).any().item()}")
+    print(f"y has NaN: {torch.isnan(y).any().item()}")
+    if torch.isnan(y).any():
+        nan_mask = torch.isnan(y)
+        print(f"y NaN locations: {nan_mask.nonzero()}")
+        print(f"y NaN count: {nan_mask.sum().item()}")
+    
     train_size = int(0.8 * batch_size)
     x_train, x_val = x[:train_size], x[train_size:]
     t_train, t_val = t[:train_size], t[train_size:]
@@ -214,16 +225,16 @@ def test_fit_mlpema_hard():
     
     train_dataset = TensorDataset(x_train, t_train, y_train)
     val_dataset = TensorDataset(x_val, t_val, y_val)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=10, shuffle=False)
     
     model = MLPEMA(
         num_features=3,
         dim_lists=[[3, 64, 32], [32, 16, 4]],
-        halflife_bounds=(0.1, 100.0),
+        halflife_bounds=(10.0, 10.0),
         out_features=3
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-3)
     
     print("\nFitting MLPEMA to hard dataset:")
     print("y1 = running_std(x1)")

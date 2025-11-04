@@ -10,27 +10,29 @@ from tqdm import tqdm
 from better_regressions.mlp import MLP
 
 
+@torch.jit.script
+def _ema_impl(x_flat: torch.Tensor, dt_flat: torch.Tensor, halflife: torch.Tensor) -> torch.Tensor:
+    alpha = 0.5 ** (1 / halflife)
+    result = torch.zeros_like(x_flat)
+    weighted_sum = torch.zeros_like(x_flat[:, 0])
+    total_coeff = torch.zeros_like(x_flat[:, 0])
+    seq_len = x_flat.shape[1]
+    for i in range(seq_len):
+        decay = alpha ** dt_flat[:, i]
+        weighted_sum = weighted_sum * decay + x_flat[:, i]
+        total_coeff = total_coeff * decay + 1.0
+        result[:, i] = weighted_sum / (total_coeff + 1e-10)
+    return result
+
 def ema(x: Float[Tensor, "... seq"], dt: Float[Tensor, "... seq"], halflife: Float[Tensor, "..."]) -> Float[Tensor, "... seq"]:
     assert x.ndim >= 2, "x must have at least 2 dimensions"
     assert x.shape == dt.shape, "x and dt must have the same shape"
     original_shape = x.shape
     x_flat = x.flatten(0, -2)
     dt_flat = dt.flatten(0, -2)
-    halflife = halflife.expand(x_flat.shape[:-1]).flatten()
-
-    alpha = 0.5 ** (1 / halflife)
-
-    result = torch.zeros_like(x_flat)
-    weighted_sum = torch.zeros_like(x_flat[:, 0])
-    total_coeff = torch.zeros_like(x_flat[:, 0])
-
-    for i in range(x_flat.shape[1]):
-        decay = alpha ** dt_flat[:, i]
-        weighted_sum = weighted_sum * decay + x_flat[:, i]
-        total_coeff = total_coeff * decay + 1.0
-        result[:, i] = weighted_sum / (total_coeff + 1e-10)
-
-    return result.reshape(original_shape)
+    halflife_expanded = halflife.expand(x_flat.shape[:-1]).flatten()
+    result_flat = _ema_impl(x_flat, dt_flat, halflife_expanded)
+    return result_flat.reshape(original_shape)
 
 
 class AdaptiveEMA(nn.Module):
@@ -89,26 +91,40 @@ class MLPEMA(nn.Module):
     ):
         super().__init__()
         self.num_features = num_features
+        self.out_features = out_features
         self.blocks = nn.ModuleList()
+        self.skip_linears = nn.ModuleList()
         
         current_features = num_features
+        self.skip_linears.append(nn.Linear(num_features, out_features))
+        
         for dim_list in dim_lists:
             mlp = FeaturewiseMLP(current_features, dim_list, **mlp_kwargs)
             self.blocks.append(mlp)
             current_features = dim_list[-1] if dim_list else current_features
+            self.skip_linears.append(nn.Linear(current_features, out_features))
+            
             ema = AdaptiveEMA(current_features, halflife_bounds)
             self.blocks.append(ema)
-        self.final_linear = nn.Linear(current_features, out_features)
+            self.skip_linears.append(nn.Linear(current_features, out_features))
+        
         self.final_ema = AdaptiveEMA(out_features, halflife_bounds)
 
     def forward(self, x: Float[Tensor, "batch features seq"], t: Float[Tensor, "batch seq"]) -> Float[Tensor, "batch features seq"]:
-        for block in self.blocks:
-            x = block(x, t)
+        batch_size, _, seq_len = x.shape
         
-        batch_size, num_features, seq_len = x.shape
-        x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
-        y_flat = self.final_linear(x_flat)
+        x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, self.num_features)
+        y_flat = self.skip_linears[0](x_flat)
         y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
+        
+        for block, skip_linear in zip(self.blocks, self.skip_linears[1:]):
+            x = block(x, t)
+            batch_size, num_features, seq_len = x.shape
+            x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, num_features)
+            skip_y_flat = skip_linear(x_flat)
+            skip_y = skip_y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
+            y = y + skip_y
+        
         y = self.final_ema(y, t)
         return y
 
