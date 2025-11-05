@@ -109,8 +109,10 @@ def test_fit_mlpema():
     batch_size, num_features, seq_len = 1000, 1, 100
     x = torch.randn(batch_size, num_features, seq_len)
     
-    halflife = torch.tensor([5.0])
-    y = ema(x**2, halflife)
+    halflife = torch.tensor([50.0])
+    y = ema(x**2, halflife) - ema(x, halflife)**2
+    y -= y.mean(dim=(0, 2), keepdim=True)
+    y /= y.std(dim=(0, 2), keepdim=True) + 1e-8
     
     train_size = int(0.8 * batch_size)
     x_train, x_val = x[:train_size], x[train_size:]
@@ -124,10 +126,10 @@ def test_fit_mlpema():
     model = MLPEMA(
         num_features=1,
         dim_lists=[[1, 32, 4]],
-        halflife_bounds=(0.1, 100.0),
+        halflife_bounds=(1.0, 100.0),
         out_features=1
     )
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-2)
     
     print("\nFitting MLPEMA to y = ema(x^2, halflife=1000)")
     print(f"Before training - Validation RMSE: {test_regression(model, val_loader, use_rmse=True):.6f}")
@@ -176,6 +178,9 @@ def test_fit_mlpema_hard():
     
     x = torch.tensor(np.stack(x_list), dtype=torch.float32)
     y = torch.tensor(np.stack(y_list), dtype=torch.float32)
+    print("Std of y:", y.std(dim=(0, 2), keepdim=True))
+    y /= y.std(dim=(0, 2), keepdim=True) + 1e-8
+    print("Std of y:", y.std(dim=(0, 2), keepdim=True))
     
     print(f"\nChecking for NaNs in datasets:")
     print(f"x has NaN: {torch.isnan(x).any().item()}")
@@ -197,7 +202,7 @@ def test_fit_mlpema_hard():
     model = MLPEMA(
         num_features=3,
         dim_lists=[[3, 64, 32], [32, 16, 4]],
-        halflife_bounds=(10.0, 10.0),
+        halflife_bounds=(10.0, 1000.0),
         out_features=3
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-3)

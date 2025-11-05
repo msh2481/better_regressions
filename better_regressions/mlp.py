@@ -57,7 +57,7 @@ class PointwiseRELUKAN(nn.Module):
         return (ab2 * self.w).sum(dim=-1)
 
 
-class PointwiseRELU(nn.Module):
+class PointwiseReLU(nn.Module):
     def __init__(self, input_size: int, k: int = 8):
         super().__init__()
         self.input_size = input_size
@@ -74,6 +74,11 @@ class PointwiseRELU(nn.Module):
         out = x.unsqueeze(2)  # [batch, input, k]
         a = torch.abs(out - self.midpoints)
         return 0.1 * x + (a * self.w).sum(dim=-1)
+
+
+class ReLU2(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.relu(x) ** 2
 
 
 class Copy(nn.Module):
@@ -148,7 +153,7 @@ class KANBlock(nn.Module):
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
         self.norm = RunningRMSNorm(in_features)
-        self.activation = PointwiseRELU(in_features, k)
+        self.activation = PointwiseReLU(in_features, k)
         self._last_linear_output = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
