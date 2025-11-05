@@ -163,7 +163,7 @@ def test_fit_mlpema_hard():
 
         df["ema_x2"] = df["x2"].ewm(alpha=alpha, adjust=True).mean()
         df["ema_x3"] = df["x3"].ewm(alpha=alpha, adjust=True).mean()
-        df["ema_x2x3_2"] = df["ema_x2"] + df["ema_x3"]
+        df["ema_x2x3_2"] = df["ema_x2"] * df["ema_x3"]
         df["y3"] = df["ema_x2x3_2"].ewm(alpha=alpha, adjust=True).mean()
 
         df["y1"] = df["y1"] * 0
