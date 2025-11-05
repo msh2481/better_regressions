@@ -110,13 +110,18 @@ class MLPBlock(nn.Module):
         self.residual = residual and in_features == out_features
         if self.residual:
             nn.init.normal_(self.linear.weight, std=1e-6)
+            # "Looks Linear" initialization
+            w = self.linear.weight
+            half = out_features // 2
+            assert w.shape[0] == out_features, "Weight shape should be [out_features, in_features]"
+            w.data[half:] = -w.data[:half]
 
         if use_norm:
             self.norm = RunningRMSNorm(in_features)
         else:
             self.norm = None
 
-        self.activation = nn.GELU()
+        self.activation = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.norm is not None:

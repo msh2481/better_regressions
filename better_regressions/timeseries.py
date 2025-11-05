@@ -14,22 +14,23 @@ from better_regressions.mlp import MLP, RunningRMSNorm
 def _ema_impl(x_flat: torch.Tensor, halflife: torch.Tensor, max_size: int = 200) -> torch.Tensor:
     batch_features, seq_len = x_flat.shape
     alpha = 0.5 ** (1 / halflife)
-    
+
     kernel_size = min(max_size + 1, seq_len)
     arange = torch.arange(kernel_size, device=x_flat.device, dtype=x_flat.dtype).flip(0)
     kernel_weights = (alpha.unsqueeze(1) ** arange.unsqueeze(0)).unsqueeze(1)
     kernel = kernel_weights
-    
+
     x_reshaped = x_flat.unsqueeze(0)
     result = F.conv1d(x_reshaped, kernel, padding=kernel_size - 1, groups=batch_features)
     result = result.squeeze(0)[:, :seq_len]
-    
+
     ones_input = torch.ones_like(x_reshaped)
     total_weight = F.conv1d(ones_input, kernel, padding=kernel_size - 1, groups=batch_features)
     total_weight = total_weight.squeeze(0)[:, :seq_len]
-    
+
     result = result / (total_weight + 1e-8)
     return result
+
 
 def ema(x: Float[Tensor, "... seq"], halflife: Float[Tensor, "..."]) -> Float[Tensor, "... seq"]:
     assert x.ndim >= 2, "x must have at least 2 dimensions"
@@ -69,14 +70,7 @@ class FeaturewiseMLP(nn.Module):
 
 
 class MLPEMABlock(nn.Module):
-    def __init__(
-        self,
-        in_features: int,
-        dim_list: list[int],
-        halflife_bounds: tuple[float, float],
-        out_features: int,
-        **mlp_kwargs
-    ):
+    def __init__(self, in_features: int, dim_list: list[int], halflife_bounds: tuple[float, float], out_features: int, **mlp_kwargs):
         super().__init__()
         self.in_features = in_features
         self.mlp_out_features = dim_list[-1]
@@ -87,59 +81,52 @@ class MLPEMABlock(nn.Module):
         self.ema_output = AdaptiveEMA(self.mlp_out_features, halflife_bounds)
         self.ema_var = AdaptiveEMA(self.in_features, halflife_bounds)
         self.norm = RunningRMSNorm(self.in_features + self.mlp_out_features * 2)
-        self.combined_linear = nn.Linear(self.in_features + self.mlp_out_features * 2, self.out_features * 2)
+        self.combined_linear = nn.Linear(self.in_features + self.mlp_out_features * 2, self.out_features + self.mlp_out_features)
 
     def forward(self, x: Float[Tensor, "batch features seq"]) -> tuple[Float[Tensor, "batch features seq"], Float[Tensor, "batch out_features seq"]]:
         ema_mlp = self.ema_output(self.mlp(x))
         mlp_ema = self.mlp(self.ema_input(x))
-        ema_var = self.ema_var(x ** 2) - self.ema_var(x) ** 2
+        ema_var = self.ema_var(x**2) - self.ema_var(x) ** 2
         batch_size, out_features, seq_len = ema_mlp.shape
-        combined = torch.cat([ema_mlp * 0, mlp_ema * 0, ema_var], dim=1)
+        combined = torch.cat([ema_mlp, mlp_ema, ema_var], dim=1)
         combined_flat = combined.permute(0, 2, 1).reshape(batch_size * seq_len, self.in_features + self.mlp_out_features * 2)
         combined_norm = self.norm(combined_flat)
         linear_output_flat = self.combined_linear(combined_norm)
-        skip_y_flat, output_flat = torch.split(linear_output_flat, self.out_features, dim=1)
+        skip_y_flat, output_flat = torch.split(linear_output_flat, [self.out_features, self.mlp_out_features], dim=1)
         skip_y = skip_y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
         output = output_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
         return output, skip_y
 
 
 class MLPEMA(nn.Module):
-    def __init__(
-        self,
-        num_features: int,
-        dim_lists: list[list[int]],
-        halflife_bounds: tuple[float, float],
-        out_features: int,
-        **mlp_kwargs
-    ):
+    def __init__(self, num_features: int, dim_lists: list[list[int]], halflife_bounds: tuple[float, float], out_features: int, **mlp_kwargs):
         super().__init__()
         self.num_features = num_features
         self.out_features = out_features
         self.blocks = nn.ModuleList()
-        
+
         current_features = num_features
         self.skip_linears = nn.ModuleList()
         self.skip_linears.append(nn.Linear(num_features, out_features))
-        
+
         for dim_list in dim_lists:
             block = MLPEMABlock(current_features, dim_list, halflife_bounds, out_features, **mlp_kwargs)
             self.blocks.append(block)
             current_features = dim_list[-1] if dim_list else current_features
-        
+
         self.final_ema = AdaptiveEMA(out_features, halflife_bounds)
 
     def forward(self, x: Float[Tensor, "batch features seq"]) -> Float[Tensor, "batch features seq"]:
         batch_size, _, seq_len = x.shape
-        
+
         x_flat = x.permute(0, 2, 1).reshape(batch_size * seq_len, self.num_features)
         y_flat = self.skip_linears[0](x_flat)
         y = y_flat.reshape(batch_size, seq_len, -1).permute(0, 2, 1)
-        
+
         for block in self.blocks:
             x, skip_y = block(x)
             y = y + skip_y
-        
+
         y = self.final_ema(y)
         return y
 
@@ -147,11 +134,11 @@ class MLPEMA(nn.Module):
         total_loss = torch.tensor(0.0)
         device = next(self.parameters()).device
         total_loss = total_loss.to(device)
-        
+
         for block in self.blocks:
             if hasattr(block.mlp.mlp, "extra_loss"):
                 total_loss = total_loss + block.mlp.mlp.extra_loss()
-        
+
         return total_loss
 
 
